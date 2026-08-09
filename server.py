@@ -1,10 +1,10 @@
 """
-Live capture API + static camera UI.
+Foot Measure Lab API (no web UI).
+
+Used by the Flutter app for live Ready checks and background measurement.
 
 Run:
   uvicorn server:app --host 0.0.0.0 --port 8000
-Open:
-  http://localhost:8000/
 """
 
 from __future__ import annotations
@@ -18,8 +18,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 from fastapi import FastAPI, File, Form, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps
 
 from capture_validate import validate_frame
@@ -33,12 +33,17 @@ from main import (
 from shoe_size import sizes_from_cm
 
 ROOT = Path(__file__).resolve().parent
-STATIC = ROOT / 'static'
 UPLOADS = ROOT / 'output' / 'uploads'
 JOBS: dict[str, dict] = {}
 JOBS_LOCK = threading.Lock()
 
-app = FastAPI(title='Foot Measure Capture', version='1.0.0')
+app = FastAPI(title='Foot Measure Lab API', version='2.0.0')
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=['*'],
+    allow_methods=['*'],
+    allow_headers=['*'],
+)
 
 
 def _read_rgb(data: bytes, max_side: int = 1600) -> np.ndarray:
@@ -73,8 +78,7 @@ def _run_job(job_id: str):
 
     try:
         ensure_output_dir()
-        data = rgb_path.read_bytes()
-        rgb = _read_rgb(data)
+        rgb = _read_rgb(rgb_path.read_bytes())
         if mode == 'paper':
             cm = measure_with_paper(rgb)
         elif mode == 'card':
@@ -84,8 +88,7 @@ def _run_job(job_id: str):
         else:
             if not depth_path:
                 raise ValueError(
-                    'Depth mode needs a depth map. Capture saved the photo; '
-                    'upload a LiDAR depth file to finish, or use card mode.'
+                    'Depth mode needs an aligned metric depth map from a native LiDAR/AR export.'
                 )
             cm = measure_with_depth(rgb, depth_path, depth_scale=depth_scale)
 
@@ -116,7 +119,7 @@ def _run_job(job_id: str):
 
 @app.get('/api/health')
 def health():
-    return {'ok': True}
+    return {'ok': True, 'service': 'foot-measure-lab-api'}
 
 
 @app.post('/api/validate')
@@ -127,8 +130,7 @@ async def api_validate(
     data = await frame.read()
     if not data:
         return {'ready': False, 'message': 'Empty frame', 'checks': {}, 'hints': []}
-    rgb = _read_rgb(data, max_side=960)
-    rgb = _downscale(rgb, max_side=480)
+    rgb = _downscale(_read_rgb(data, max_side=960), max_side=480)
     return validate_frame(rgb, mode=mode)
 
 
@@ -145,8 +147,7 @@ async def create_job(
     UPLOADS.mkdir(parents=True, exist_ok=True)
     job_id = uuid.uuid4().hex[:12]
     rgb_path = UPLOADS / f'{job_id}.jpg'
-    raw = await image.read()
-    rgb_path.write_bytes(raw)
+    rgb_path.write_bytes(await image.read())
 
     depth_path = None
     if depth is not None and depth.filename:
@@ -168,12 +169,12 @@ async def create_job(
             'error': None,
         }
 
-    # Depth without file: accept capture, finish later when depth arrives
     if mode == 'depth' and depth_path is None:
         with JOBS_LOCK:
             JOBS[job_id]['status'] = 'awaiting_depth'
             JOBS[job_id]['message'] = (
-                'Photo captured. Attach a depth map to finish, or switch to card mode.'
+                'Photo captured. Depth must be supplied by a LiDAR/AR export, '
+                'or use credit-card mode (recommended).'
             )
         return {'job_id': job_id, 'status': 'awaiting_depth'}
 
@@ -232,6 +233,3 @@ def serve_output(name: str):
     if not path.is_file():
         return {'error': 'not found'}
     return FileResponse(path)
-
-
-app.mount('/', StaticFiles(directory=str(STATIC), html=True), name='static')

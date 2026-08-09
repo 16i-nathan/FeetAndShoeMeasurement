@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Foot Measure Lab</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <main class="wrap">
+    <h1 class="brand">Foot Measure Lab</h1>
+    <p class="tag">Line up the shot — capture when it says Ready. Measurement runs in the background.</p>
+
+    <section class="stage" id="stage">
+      <video id="video" playsinline autoplay muted></video>
+      <canvas id="snap" class="snap" style="display:none"></canvas>
+      <div class="guide wait" id="guide">
+        <svg class="guide-svg" viewBox="0 0 100 100" aria-hidden="true">
+          <rect x="58" y="48" width="22" height="34" rx="2" fill="none" stroke="#f4ebe3" stroke-width="1.5" stroke-dasharray="3 2"/>
+          <path d="M28 78 C26 60 30 40 38 28 C44 36 48 48 50 62 C46 70 38 78 28 78 Z" fill="none" stroke="#f4ebe3" stroke-width="1.5"/>
+        </svg>
+      </div>
+      <div class="status-pill" id="pill"><span class="dot"></span><span id="pillText">Starting camera…</span></div>
+      <div class="msg" id="msg">Allow camera access to begin.</div>
+    </section>
+
+    <section class="controls">
+      <div class="row">
+        <label class="field">Mode
+          <select id="mode">
+            <option value="card" selected>Credit card</option>
+            <option value="paper">A4 paper</option>
+            <option value="both">Paper + card</option>
+            <option value="depth">Depth / LiDAR</option>
+          </select>
+        </label>
+        <label class="field">Depth file (optional)
+          <input id="depthFile" type="file" accept=".npy,.png,.tif,.tiff" />
+        </label>
+      </div>
+      <button class="btn-capture" id="captureBtn" disabled>Capture</button>
+      <button class="btn-secondary" id="retakeBtn" style="display:none">Retake</button>
+    </section>
+
+    <section class="panel" id="resultPanel">
+      <h2 id="resultTitle">Processing</h2>
+      <div class="progress" id="progress"><i></i></div>
+      <p id="resultMsg">Working in the background…</p>
+      <div class="metrics" id="metrics" style="display:none">
+        <div class="metric"><b id="mCm">—</b><span>Foot length</span></div>
+        <div class="metric"><b id="mEu">—</b><span>EU (approx)</span></div>
+        <div class="metric"><b id="mUsM">—</b><span>US Men</span></div>
+        <div class="metric"><b id="mUsW">—</b><span>US Women</span></div>
+      </div>
+      <img id="preview" class="preview" alt="Detection preview" style="display:none" />
+      <ul class="hint-list" id="hintList"></ul>
+    </section>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>

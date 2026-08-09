@@ -1,24 +1,32 @@
 # FeetAndShoeMeasurement - Feet and Shoe size measurements without Deep Learning
 **Problem** : Determine the Feet and corresponding Shoe size of a person without Deep Learning, given a image clicked by the person itself. 
 
-## Test app (share with testers)
+## Capture UI (recommended for testers)
 
-Web UI with upload, validation, and size display:
+Live camera with **Ready** validation, then measurement in the background:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+uvicorn server:app --host 0.0.0.0 --port 8000
+```
+
+Open `http://localhost:8000/` (phone on same Wi‑Fi: `http://<your-ip>:8000/`).
+
+Flow:
+1. Camera opens → status **Aligning…** / **Ready**
+2. Tap **Capture** (photo freezes immediately)
+3. Measurement runs in the background; result + overlay appear when done
+4. **Depth / LiDAR**: capture saves RGB first; attach a depth file to finish (browsers cannot read phone LiDAR directly)
+
+## Upload UI (Streamlit)
+
+```bash
 streamlit run app.py
 ```
 
-**Always-on hosting (Streamlit Community Cloud):**
-1. Push this repo to GitHub
-2. Open [share.streamlit.io](https://share.streamlit.io/) → **New app**
-3. Select the repo, branch `main`, main file `app.py` → Deploy
-4. Share the `https://…streamlit.app` URL with your test group
-
-Modes: credit card / A4 paper / both / depth (depth needs a LiDAR depth file, not a normal photo).
+**Streamlit Cloud:** [deploy link](https://share.streamlit.io/deploy?repository=16i-nathan/FeetAndShoeMeasurement&branch=main&mainModule=app.py) — good for upload testing. Use the FastAPI capture UI on a VPS/Render for the live camera “Ready” flow.
 
 ## CLI
 * Clone the repo

@@ -1,0 +1,18 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.streamlit/secrets.toml
+
+# Local outputs and personal captures (do not publish)
+output/
+data/nathan*
+data/*.Zone.Identifier
+*.heic
+*.HEIC
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/

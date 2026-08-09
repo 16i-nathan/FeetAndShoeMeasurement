@@ -1,0 +1,119 @@
+================================================================================
+FeetAndShoeMeasurement — Reference Image Generation Prompts
+================================================================================
+Use with any image model (DALL·E, Midjourney, Flux, etc.).
+Goal: produce photos the CV pipeline can measure reliably.
+
+Shared rules (append to every prompt):
+- Photorealistic smartphone photo, natural color, no illustration
+- Strictly top-down / bird’s-eye view (camera parallel to the floor)
+- Subject fully inside the frame; nothing cut off at edges
+- Even lighting, soft shadows, NO flash glare or specular hotspots
+- Dark non-white floor (wood or matte brown/gray) for contrast
+- No extra objects, text overlays, watermarks, or UI chrome
+- Vertical portrait framing preferred
+
+
+--------------------------------------------------------------------------------
+1) A4 PAPER ONLY  (--ref paper)
+--------------------------------------------------------------------------------
+Photorealistic top-down smartphone photo of a single bare adult human foot
+resting on a full blank white A4 printer sheet (210×297 mm) on a dark wood floor.
+The entire A4 sheet is visible with all four corners in frame. The foot is
+centered on the paper, heel near one short edge, toes pointing toward the
+opposite short edge, foot not hanging off the paper. Camera directly above,
+orthographic-like, even daylight, no glare. High contrast between white paper,
+skin, and dark floor. No shoes, no socks, no other objects.
+
+
+--------------------------------------------------------------------------------
+2) CREDIT CARD ONLY  (--ref card)
+--------------------------------------------------------------------------------
+Photorealistic top-down smartphone photo of a single bare adult human foot
+and one standard credit card (ISO/IEC 7810 ID-1, 85.6×53.98 mm) on a dark wood
+floor. The full foot (toes to heel) is visible. The blank generic white plastic
+card lies flat beside the midfoot, fully visible, not overlapping the foot,
+oriented portrait. No real card numbers, no logos, no name — plain white card
+with a subtle chip rectangle only. Camera directly above, even lighting, no
+flash glare. High contrast between card, skin, and floor. No paper, no shoes.
+
+
+--------------------------------------------------------------------------------
+3) PAPER + CREDIT CARD  (--ref both)  [best test case]
+--------------------------------------------------------------------------------
+Photorealistic top-down smartphone photo of a single bare adult human foot on a
+full blank white A4 sheet on a dark wood floor, with one plain white credit-card-
+sized plastic card lying flat on the paper next to the foot. Entire A4 sheet and
+entire card visible; foot fully on the paper from heel to toes. Card does not
+cover the foot. Camera directly above, even soft light, no glare. No real
+branding, numbers, or logos on the card. No other objects.
+
+
+--------------------------------------------------------------------------------
+4) NEGATIVE / HARD CASES (optional stress tests)
+--------------------------------------------------------------------------------
+A) Paper cropped: same as (1) but bottom edge of A4 and heel cut off by frame.
+B) Sideways phone: same as (2) but image stored rotated 90° (landscape pixels).
+C) Flash glare: same as (2) with a bright circular flash reflection on the floor.
+D) White floor: same as (2) but floor is white/light gray (poor paper/card contrast).
+E) Angled shot: same as (3) but camera ~30° from vertical (perspective distortion).
+
+
+--------------------------------------------------------------------------------
+5) VARIATIONS (mix into prompts 1–3)
+--------------------------------------------------------------------------------
+- Skin tone: light / medium / dark
+- Foot: left or right
+- Floor: dark oak / charcoal matte / deep brown tile
+- Card color: plain white / matte light gray (still high contrast vs floor)
+- Mild sock-free barefoot only; keep nails and toes clearly visible
+
+
+--------------------------------------------------------------------------------
+6) SHORT MIDJOURNEY-STYLE ONE-LINERS
+--------------------------------------------------------------------------------
+Paper:
+/imagine photorealistic top-down photo bare foot on full white A4 paper, dark wood floor, all paper corners visible, even light, no glare --ar 3:4 --style raw
+
+Card:
+/imagine photorealistic top-down photo bare foot beside plain white credit card, dark wood floor, full foot in frame, no logos no numbers, even light, no glare --ar 3:4 --style raw
+
+Both:
+/imagine photorealistic top-down photo bare foot on full A4 paper with plain white credit card beside foot on the paper, dark wood floor, even light, no glare --ar 3:4 --style raw
+
+
+--------------------------------------------------------------------------------
+7) DEPTH / LIDAR  (--ref depth)
+--------------------------------------------------------------------------------
+Capture (not generative) — image models do not produce real metric depth.
+
+iPhone (LiDAR models) / iPad Pro:
+  - Use an app that exports RGB + depth (e.g. 3D Scanner App, Record3D, Depthy)
+  - Export depth as meters (.npy) or 16-bit PNG in millimeters
+  - Top-down view of bare foot on the floor; full foot in frame
+  - Save as:  data/myfoot.jpg  +  data/myfoot_depth.npy
+    or:       data/myfoot.jpg  +  data/myfoot_depth.png
+
+Android (ToF / ARCore depth):
+  - Export aligned depth the same way; values must convert to meters
+
+Then run:
+  python main.py data/myfoot.jpg --ref depth
+  python main.py data/myfoot.jpg --ref depth --depth data/myfoot_depth.png --depth-scale 0.001
+  python main.py data/myfoot.jpg --ref depth --fx 1200 --fy 1200   # optional intrinsics
+
+Synthetic smoke test (no phone needed):
+  python -c "from depth_measure import make_synthetic_rgbd; print(make_synthetic_rgbd())"
+  python main.py data/synthetic_depth_rgb.jpg --ref depth --fx 520 --fy 520 --cx 240 --cy 320
+
+
+--------------------------------------------------------------------------------
+After generating
+--------------------------------------------------------------------------------
+Save into data/ (e.g. data/ref_paper_01.jpg, data/ref_card_01.jpg, data/ref_both_01.jpg)
+Then run:
+  python main.py data/ref_paper_01.jpg --ref paper
+  python main.py data/ref_card_01.jpg --ref card
+  python main.py data/ref_both_01.jpg --ref both
+  python main.py data/myfoot.jpg --ref depth
+Check output/card_detect.jpg, output/pdraw.jpg, or output/depth_detect.jpg.

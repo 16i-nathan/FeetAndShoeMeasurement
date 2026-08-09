@@ -298,6 +298,10 @@ class _CaptureScreenState extends State<CaptureScreen> {
                 DropdownMenuItem(value: 'card', child: Text('Credit card')),
                 DropdownMenuItem(value: 'paper', child: Text('A4 paper')),
                 DropdownMenuItem(value: 'both', child: Text('Paper + card')),
+                DropdownMenuItem(
+                  value: 'depth',
+                  child: Text('Depth / LiDAR'),
+                ),
               ],
               onChanged: _processing
                   ? null
@@ -307,10 +311,25 @@ class _CaptureScreenState extends State<CaptureScreen> {
                         _mode = v;
                         _ready = false;
                         _statusText = 'Aligning…';
-                        _message = 'Mode changed — re-check framing.';
+                        _message = v == 'depth'
+                            ? 'Depth needs a LiDAR/AR depth map — phone camera alone is not enough. Prefer Credit card.'
+                            : 'Mode changed — re-check framing.';
                       });
                     },
             ),
+            if (_mode == 'depth') ...[
+              const SizedBox(height: 8),
+              Text(
+                'Depth / LiDAR: Flutter cannot read phone LiDAR from the normal camera. '
+                'Capture will save RGB only unless you later attach a depth export via the API. '
+                'For testers, use Credit card mode.',
+                style: TextStyle(
+                  color: _muted.withValues(alpha: 0.95),
+                  fontSize: 12,
+                  height: 1.35,
+                ),
+              ),
+            ],
             const SizedBox(height: 12),
             if (!_processing)
               FilledButton(

@@ -46,15 +46,17 @@ app.add_middleware(
 )
 
 
-def _read_rgb(data: bytes, max_side: int = 1600) -> np.ndarray:
+def _read_rgb(data: bytes, max_side: int = 1600):
+    """Returns (rgb_uint8, scale) where scale is the resize factor on width/height."""
     img = Image.open(io.BytesIO(data))
     img = ImageOps.exif_transpose(img).convert('RGB')
     w, h = img.size
     long_side = max(w, h)
+    scale = 1.0
     if long_side > max_side:
         scale = max_side / long_side
         img = img.resize((int(w * scale), int(h * scale)), Image.Resampling.LANCZOS)
-    return np.asarray(img)
+    return np.asarray(img), scale
 
 
 def _downscale(rgb: np.ndarray, max_side: int = 480) -> np.ndarray:
@@ -75,10 +77,14 @@ def _run_job(job_id: str):
         rgb_path = Path(job['rgb_path'])
         depth_path = job.get('depth_path')
         depth_scale = job.get('depth_scale')
+        fx = job.get('fx')
+        fy = job.get('fy')
+        cx = job.get('cx')
+        cy = job.get('cy')
 
     try:
         ensure_output_dir()
-        rgb = _read_rgb(rgb_path.read_bytes())
+        rgb, img_scale = _read_rgb(rgb_path.read_bytes())
         if mode == 'paper':
             cm = measure_with_paper(rgb)
         elif mode == 'card':
@@ -90,7 +96,19 @@ def _run_job(job_id: str):
                 raise ValueError(
                     'Depth mode needs an aligned metric depth map from a native LiDAR/AR export.'
                 )
-            cm = measure_with_depth(rgb, depth_path, depth_scale=depth_scale)
+            fx_s = fx * img_scale if fx is not None else None
+            fy_s = fy * img_scale if fy is not None else None
+            cx_s = cx * img_scale if cx is not None else None
+            cy_s = cy * img_scale if cy is not None else None
+            cm = measure_with_depth(
+                rgb,
+                depth_path,
+                depth_scale=depth_scale,
+                fx=fx_s,
+                fy=fy_s,
+                cx=cx_s,
+                cy=cy_s,
+            )
 
         sizes = sizes_from_cm(cm)
         preview = None
@@ -130,7 +148,8 @@ async def api_validate(
     data = await frame.read()
     if not data:
         return {'ready': False, 'message': 'Empty frame', 'checks': {}, 'hints': []}
-    rgb = _downscale(_read_rgb(data, max_side=960), max_side=480)
+    rgb, _ = _read_rgb(data, max_side=960)
+    rgb = _downscale(rgb, max_side=480)
     return validate_frame(rgb, mode=mode)
 
 
@@ -140,6 +159,10 @@ async def create_job(
     mode: str = Form('card'),
     depth: UploadFile | None = File(None),
     depth_scale: float | None = Form(None),
+    fx: float | None = Form(None),
+    fy: float | None = Form(None),
+    cx: float | None = Form(None),
+    cy: float | None = Form(None),
 ):
     if mode not in ('paper', 'card', 'both', 'depth'):
         return {'error': 'Invalid mode'}
@@ -163,6 +186,10 @@ async def create_job(
             'rgb_path': str(rgb_path),
             'depth_path': depth_path,
             'depth_scale': depth_scale,
+            'fx': fx,
+            'fy': fy,
+            'cx': cx,
+            'cy': cy,
             'created_at': time.time(),
             'result': None,
             'preview_url': None,
@@ -173,8 +200,8 @@ async def create_job(
         with JOBS_LOCK:
             JOBS[job_id]['status'] = 'awaiting_depth'
             JOBS[job_id]['message'] = (
-                'Photo captured. Depth must be supplied by a LiDAR/AR export, '
-                'or use credit-card mode (recommended).'
+                'No depth map received. Use a LiDAR/AR-capable phone with the '
+                'Flutter app Depth mode, or switch to credit-card mode.'
             )
         return {'job_id': job_id, 'status': 'awaiting_depth'}
 

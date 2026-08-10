@@ -31,9 +31,22 @@ App flow:
 3. Measurement runs in the background on the API
 4. Shows cm + approx EU / US sizes
 
-Modes: **credit card** (recommended), A4 paper, paper + card.
+Modes: **credit card**, A4 paper, paper + card, **Depth / LiDAR**.
 
-> Browsers / Flutter `camera` cannot read iPhone LiDAR depth. For reliable sizing without depth files, use a **credit card** in frame.
+### Depth / LiDAR (automatic on compatible phones)
+
+On a real device the app captures **RGB + metric depth** via:
+- **iOS:** ARKit scene depth (LiDAR iPhone/iPad Pro)
+- **Android:** ARCore depth (devices with depth support)
+
+No manual `.npy` file. Chrome / emulator / non-LiDAR phones cannot do this mode — use **Credit card** instead.
+
+```bash
+# Physical LiDAR iPhone example:
+cd mobile
+flutter run -d <deviceId> --dart-define=API_BASE_URL=http://YOUR_LAN_IP:8000
+# In app: Mode → Depth / LiDAR → Capture
+```
 
 ## Deploy API (always-on)
 

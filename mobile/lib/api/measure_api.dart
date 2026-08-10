@@ -110,13 +110,34 @@ class MeasureApi {
     return ValidateResult.fromJson(jsonDecode(body) as Map<String, dynamic>);
   }
 
-  Future<String> createJob(Uint8List jpeg, String mode) async {
+  Future<String> createJob(
+    Uint8List jpeg,
+    String mode, {
+    Uint8List? depthNpy,
+    double? fx,
+    double? fy,
+    double? cx,
+    double? cy,
+  }) async {
     final req = http.MultipartRequest('POST', _u('/api/jobs'));
     req.fields['mode'] = mode;
+    if (fx != null) req.fields['fx'] = '$fx';
+    if (fy != null) req.fields['fy'] = '$fy';
+    if (cx != null) req.fields['cx'] = '$cx';
+    if (cy != null) req.fields['cy'] = '$cy';
     req.files.add(
       http.MultipartFile.fromBytes('image', jpeg, filename: 'capture.jpg'),
     );
-    final streamed = await req.send().timeout(const Duration(seconds: 30));
+    if (depthNpy != null) {
+      req.files.add(
+        http.MultipartFile.fromBytes(
+          'depth',
+          depthNpy,
+          filename: 'depth.npy',
+        ),
+      );
+    }
+    final streamed = await req.send().timeout(const Duration(seconds: 60));
     final body = await streamed.stream.bytesToString();
     if (streamed.statusCode >= 400) {
       throw Exception('Job create failed (${streamed.statusCode}): $body');

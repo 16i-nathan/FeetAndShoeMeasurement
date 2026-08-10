@@ -8,6 +8,7 @@ import 'package:permission_handler/permission_handler.dart';
 
 import '../api/measure_api.dart';
 import '../config.dart';
+import '../services/depth_capture.dart';
 
 class CaptureScreen extends StatefulWidget {
   const CaptureScreen({super.key, required this.cameras});
@@ -29,6 +30,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
   List<String> _hints = const [];
   bool _busy = false;
   bool _processing = false;
+  bool _depthSupported = false;
   Timer? _validateTimer;
   MeasureResult? _result;
   String? _error;
@@ -45,6 +47,13 @@ class _CaptureScreenState extends State<CaptureScreen> {
   void initState() {
     super.initState();
     _initCamera();
+    _checkDepthSupport();
+  }
+
+  Future<void> _checkDepthSupport() async {
+    final ok = await DepthCapture.isSupported();
+    if (!mounted) return;
+    setState(() => _depthSupported = ok);
   }
 
   @override
@@ -135,22 +144,50 @@ class _CaptureScreenState extends State<CaptureScreen> {
   }
 
   Future<void> _capture() async {
-    final c = _controller;
-    if (c == null || !c.value.isInitialized || _processing) return;
+    if (_processing) return;
 
     setState(() {
       _processing = true;
       _result = null;
       _error = null;
       _statusText = 'Captured';
-      _message = 'Measuring in the background…';
+      _message = _mode == 'depth'
+          ? 'Capturing LiDAR depth…'
+          : 'Measuring in the background…';
     });
     _validateTimer?.cancel();
 
     try {
-      final file = await c.takePicture();
-      final bytes = await file.readAsBytes();
-      final jobId = await _api.createJob(Uint8List.fromList(bytes), _mode);
+      late final String jobId;
+      if (_mode == 'depth') {
+        if (!_depthSupported) {
+          throw Exception(
+            'This phone has no LiDAR/AR depth. Use Credit card mode, '
+            'or a LiDAR iPhone / ARCore depth Android device.',
+          );
+        }
+        final frame = await DepthCapture.capture();
+        if (!mounted) return;
+        setState(() => _message = 'Depth captured — measuring in background…');
+        jobId = await _api.createJob(
+          frame.jpegBytes,
+          'depth',
+          depthNpy: frame.depthNpyBytes,
+          fx: frame.fx,
+          fy: frame.fy,
+          cx: frame.cx,
+          cy: frame.cy,
+        );
+      } else {
+        final c = _controller;
+        if (c == null || !c.value.isInitialized) {
+          throw Exception('Camera not ready');
+        }
+        final file = await c.takePicture();
+        final bytes = await file.readAsBytes();
+        jobId = await _api.createJob(Uint8List.fromList(bytes), _mode);
+      }
+
       final job = await _api.waitForJob(jobId);
       if (!mounted) return;
 
@@ -163,9 +200,9 @@ class _CaptureScreenState extends State<CaptureScreen> {
       } else if (job.status == 'awaiting_depth') {
         setState(() {
           _error =
-              'Depth mode needs a native LiDAR export. Use Credit card mode instead.';
+              'Depth map missing. On a compatible phone, Depth mode captures LiDAR automatically.';
           _message = _error!;
-          _statusText = 'Use card mode';
+          _statusText = 'No depth';
         });
       } else if (job.result != null) {
         setState(() {
@@ -311,18 +348,27 @@ class _CaptureScreenState extends State<CaptureScreen> {
                         _mode = v;
                         _ready = false;
                         _statusText = 'Aligning…';
-                        _message = v == 'depth'
-                            ? 'Depth needs a LiDAR/AR depth map — phone camera alone is not enough. Prefer Credit card.'
-                            : 'Mode changed — re-check framing.';
+                        if (v == 'depth') {
+                          _message = _depthSupported
+                              ? 'LiDAR/AR depth available — point top-down at foot, then Capture.'
+                              : 'No LiDAR/AR depth on this device. Use a compatible phone or Credit card mode.';
+                          _ready = _depthSupported;
+                          _statusText =
+                              _depthSupported ? 'LiDAR ready' : 'No LiDAR';
+                        } else {
+                          _message = 'Mode changed — re-check framing.';
+                        }
                       });
                     },
             ),
             if (_mode == 'depth') ...[
               const SizedBox(height: 8),
               Text(
-                'Depth / LiDAR: Flutter cannot read phone LiDAR from the normal camera. '
-                'Capture will save RGB only unless you later attach a depth export via the API. '
-                'For testers, use Credit card mode.',
+                _depthSupported
+                    ? 'Depth / LiDAR: this phone can capture metric depth automatically. '
+                        'No card/paper or manual depth file needed. Use a real device (not browser/emulator).'
+                    : 'Depth / LiDAR: not available here. Need iPhone/iPad with LiDAR '
+                        'or Android with ARCore depth. Chrome/emulator will not work.',
                 style: TextStyle(
                   color: _muted.withValues(alpha: 0.95),
                   fontSize: 12,
@@ -333,9 +379,11 @@ class _CaptureScreenState extends State<CaptureScreen> {
             const SizedBox(height: 12),
             if (!_processing)
               FilledButton(
-                onPressed: (_controller?.value.isInitialized ?? false)
-                    ? _capture
-                    : null,
+                onPressed: (_mode == 'depth')
+                    ? (_depthSupported ? _capture : null)
+                    : ((_controller?.value.isInitialized ?? false)
+                        ? _capture
+                        : null),
                 style: FilledButton.styleFrom(
                   backgroundColor: _accent,
                   foregroundColor: _bg,

@@ -31,28 +31,103 @@ class DepthCaptureHandler(
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
-            "isSupported" -> result.success(isDepthSupported())
+            "isSupported" -> Thread {
+                val ok = isDepthSupported(retries = 3)
+                mainHandler.post { result.success(ok) }
+            }.start()
+            "warmUp" -> warmUp(result)
             "capture" -> capture(result)
             else -> result.notImplemented()
         }
     }
 
-    private fun isDepthSupported(): Boolean {
-        return try {
-            when (ArCoreApk.getInstance().checkAvailability(activity)) {
-                ArCoreApk.Availability.SUPPORTED_INSTALLED,
-                ArCoreApk.Availability.SUPPORTED_APK_TOO_OLD,
-                ArCoreApk.Availability.SUPPORTED_NOT_INSTALLED -> {
-                    val session = Session(activity)
-                    val ok = session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)
-                    session.close()
-                    ok
+    /** Probe with retries — cold ARCore / Play Services often fails once then works. */
+    private fun isDepthSupported(retries: Int): Boolean {
+        repeat(retries) { attempt ->
+            try {
+                when (ArCoreApk.getInstance().checkAvailability(activity)) {
+                    ArCoreApk.Availability.SUPPORTED_INSTALLED,
+                    ArCoreApk.Availability.SUPPORTED_APK_TOO_OLD,
+                    ArCoreApk.Availability.SUPPORTED_NOT_INSTALLED,
+                    ArCoreApk.Availability.UNKNOWN_CHECKING,
+                    ArCoreApk.Availability.UNKNOWN_TIMED_OUT -> {
+                        // requestInstall wakes / installs Play Services for AR when needed.
+                        try {
+                            ArCoreApk.getInstance().requestInstall(activity, true)
+                        } catch (_: Exception) {
+                        }
+                        val session = Session(activity)
+                        val ok = session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)
+                        session.close()
+                        if (ok) return true
+                    }
+                    else -> { /* unsupported */ }
                 }
-                else -> false
+            } catch (_: Exception) {
             }
-        } catch (_: Exception) {
-            false
+            if (attempt < retries - 1) {
+                try {
+                    Thread.sleep(400L * (attempt + 1))
+                } catch (_: InterruptedException) {
+                }
+            }
         }
+        return false
+    }
+
+    /**
+     * Briefly resume an ARCore depth session so a sleeping AR stack wakes
+     * before Flutter camera / real capture. Caller must not hold the camera.
+     */
+    private fun warmUp(result: MethodChannel.Result) {
+        if (!capturing.compareAndSet(false, true)) {
+            result.error("busy", "Depth already running", null)
+            return
+        }
+        Thread {
+            try {
+                try {
+                    ArCoreApk.getInstance().requestInstall(activity, true)
+                } catch (_: Exception) {
+                }
+                val session = Session(activity)
+                if (!session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) {
+                    session.close()
+                    fail(result, "no_depth", "This Android device does not support ARCore depth.")
+                    return@Thread
+                }
+                val config = Config(session)
+                config.depthMode = Config.DepthMode.AUTOMATIC
+                config.updateMode = Config.UpdateMode.LATEST_CAMERA_IMAGE
+                config.focusMode = Config.FocusMode.AUTO
+                session.configure(config)
+                applyDisplayGeometry(session)
+                session.resume()
+                this.session = session
+
+                // Pump a few frames so depth / tracking actually starts.
+                val deadline = System.currentTimeMillis() + 2_200
+                var frames = 0
+                while (System.currentTimeMillis() < deadline) {
+                    try {
+                        session.update()
+                        frames++
+                    } catch (_: CameraNotAvailableException) {
+                        Thread.sleep(200)
+                    }
+                    Thread.sleep(50)
+                }
+                closeSession()
+                mainHandler.post {
+                    capturing.set(false)
+                    result.success(hashMapOf("ok" to true, "frames" to frames))
+                }
+            } catch (e: UnavailableException) {
+                fail(result, "arcore", e.message ?: "ARCore unavailable")
+            } catch (e: Exception) {
+                fail(result, "error", e.message ?: "AR warm-up failed")
+            }
+        }.start()
     }
 
     private fun capture(result: MethodChannel.Result) {
@@ -63,7 +138,7 @@ class DepthCaptureHandler(
         Thread {
             var lastError: Exception? = null
             // Flutter camera must be released first; retry while the HAL frees the lens.
-            repeat(4) { attempt ->
+            repeat(5) { attempt ->
                 try {
                     val payload = captureOnce(attempt)
                     mainHandler.post {
@@ -74,27 +149,30 @@ class DepthCaptureHandler(
                 } catch (e: CameraNotAvailableException) {
                     lastError = e
                     closeSession()
-                    Thread.sleep(350L * (attempt + 1))
+                    Thread.sleep(400L * (attempt + 1))
                 } catch (e: UnavailableException) {
                     fail(result, "arcore", e.message ?: "ARCore unavailable")
                     return@Thread
                 } catch (e: Exception) {
                     lastError = e
                     closeSession()
-                    if (attempt < 3) {
-                        Thread.sleep(250L * (attempt + 1))
+                    if (attempt < 4) {
+                        Thread.sleep(350L * (attempt + 1))
                     }
                 }
             }
             val msg = lastError?.message ?: "Depth capture failed"
-            val code = when (lastError) {
-                is CameraNotAvailableException -> "camera_busy"
+            val code = when {
+                lastError is CameraNotAvailableException -> "camera_busy"
+                msg.contains("Timed out", ignoreCase = true) -> "timeout"
                 else -> "error"
             }
-            val hint = if (code == "camera_busy") {
-                "Camera still in use. Close other camera apps, wait a second, then retry."
-            } else {
-                msg
+            val hint = when (code) {
+                "camera_busy" ->
+                    "Camera still in use. Close other camera apps, wait a second, then retry."
+                "timeout" ->
+                    "Depth sensor still waking. Point at the floor and tap Capture again."
+                else -> msg
             }
             fail(result, code, hint)
         }.start()
@@ -121,11 +199,11 @@ class DepthCaptureHandler(
         session.resume()
         this.session = session
 
-        // Let ARCore warm up; depth often arrives a few frames after resume.
-        val warmupMs = 400L + attempt * 200L
+        // Cold AR needs a longer warm-up on first attempts.
+        val warmupMs = 900L + attempt * 350L
         Thread.sleep(warmupMs)
 
-        val deadline = System.currentTimeMillis() + 12_000
+        val deadline = System.currentTimeMillis() + 18_000
         var payload: HashMap<String, Any>? = null
         var frames = 0
         while (System.currentTimeMillis() < deadline) {
@@ -137,8 +215,8 @@ class DepthCaptureHandler(
             frames++
 
             // Skip early frames — depth map is often empty right after resume.
-            if (frames < 4) {
-                Thread.sleep(40)
+            if (frames < 8) {
+                Thread.sleep(45)
                 continue
             }
 

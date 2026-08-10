@@ -128,7 +128,7 @@ class MeasureApi {
     req.files.add(
       http.MultipartFile.fromBytes('frame', jpeg, filename: 'frame.jpg'),
     );
-    final streamed = await req.send().timeout(const Duration(seconds: 15));
+    final streamed = await req.send().timeout(const Duration(seconds: 45));
     final body = await streamed.stream.bytesToString();
     if (streamed.statusCode >= 400) {
       throw Exception('Validate failed (${streamed.statusCode}): $body');

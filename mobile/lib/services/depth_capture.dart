@@ -31,6 +31,7 @@ class DepthCapture {
   static const _channel = MethodChannel('foot_measure_lab/depth');
 
   /// True when this physical device can capture metric scene depth.
+  /// Retries on the native side so a cold AR stack is less likely to false-negative.
   static Future<bool> isSupported() async {
     if (kIsWeb) return false;
     if (!(Platform.isIOS || Platform.isAndroid)) return false;
@@ -42,6 +43,35 @@ class DepthCapture {
     } on PlatformException {
       return false;
     }
+  }
+
+  /// Brief AR session to wake sleeping Play Services for AR / LiDAR.
+  /// Must not run while a Flutter [CameraController] holds the camera.
+  static Future<void> warmUp() async {
+    if (kIsWeb) return;
+    if (!(Platform.isIOS || Platform.isAndroid)) return;
+    try {
+      await _channel.invokeMethod<dynamic>('warmUp');
+    } on MissingPluginException {
+      // Older builds without warmUp — ignore.
+    } on PlatformException catch (e) {
+      // Soft fail: capture path still retries.
+      if (e.code == 'no_lidar' || e.code == 'no_depth') rethrow;
+    }
+  }
+
+  /// Re-check support and wake AR before opening the depth camera flow.
+  static Future<bool> prepareForCapture() async {
+    final supported = await isSupported();
+    if (!supported) return false;
+    try {
+      await warmUp();
+    } on PlatformException catch (e) {
+      if (e.code == 'no_lidar' || e.code == 'no_depth') return false;
+      // camera_busy / timeout on warm-up — still allow Capture to try.
+    }
+    // Second probe after wake — reduces "unavailable until other AR app" cases.
+    return isSupported();
   }
 
   /// Captures one RGB JPEG + metric depth (meters) as `.npy`.
@@ -85,6 +115,36 @@ class DepthCapture {
     }
   }
 
+  /// Warm-up + capture with auto-retry for cold / sleeping AR.
+  static Future<DepthFrame> captureWithRetry({int attempts = 3}) async {
+    Object? last;
+    for (var i = 0; i < attempts; i++) {
+      try {
+        if (i > 0) {
+          await Future<void>.delayed(Duration(milliseconds: 450 * i));
+          try {
+            await warmUp();
+          } catch (_) {}
+        }
+        return await capture();
+      } on PlatformException catch (e) {
+        last = e;
+        final retryable = e.code == 'timeout' ||
+            e.code == 'camera_busy' ||
+            e.code == 'busy' ||
+            e.code == 'error';
+        final hardFail =
+            e.code == 'no_lidar' || e.code == 'no_depth' || e.code == 'arcore';
+        if (hardFail || !retryable || i == attempts - 1) rethrow;
+      } catch (e) {
+        last = e;
+        if (i == attempts - 1) rethrow;
+      }
+    }
+    if (last is Exception) throw last;
+    throw PlatformException(code: 'error', message: '$last');
+  }
+
   static String friendlyMessage(PlatformException e) {
     switch (e.code) {
       case 'camera_busy':
@@ -92,7 +152,7 @@ class DepthCapture {
             'Camera still in use. Wait a second and tap Capture again.';
       case 'timeout':
         return e.message ??
-            'Depth sensor timed out. Hold the phone steady over the floor.';
+            'Depth sensor still waking. Hold steady and retry.';
       case 'busy':
         return 'Depth capture already running — wait and retry.';
       case 'arcore':

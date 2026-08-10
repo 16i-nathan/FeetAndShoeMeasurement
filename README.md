@@ -29,10 +29,13 @@ flutter run --dart-define=API_BASE_URL=http://10.0.2.2:8000 --dart-define=LAB_MO
 ```
 
 App flow:
-1. Guidelines → camera opens → status **Aligning…** / **Ready**
-2. Preview-stream validation (no `takePicture` race)
-3. Tap **Capture** → **3-shot burst** → median length on API
-4. Result shows cm (0.5 cm steps), ± spread, confidence, shoe size approx
+1. Choose **A4 paper** or **Depth / LiDAR**
+2. Guidelines → camera → **Aligning…** / **Ready**
+3. Paper: preview-stream validation → **3-shot burst** → median length
+4. Depth: RGB framing checks → native LiDAR/ARCore capture → metric length
+5. Result shows cm (0.5 cm steps), confidence, shoe size approx
+
+Depth needs a physical phone with LiDAR (iOS) or ARCore depth (Android). Chrome / emulator: use **A4 paper**.
 
 ## How it works (production)
 

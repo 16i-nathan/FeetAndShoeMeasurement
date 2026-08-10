@@ -14,7 +14,7 @@ class MeasureMethod {
   final String id;
   final String title;
   final String subtitle;
-  final String icon; // emoji sparingly avoided — use Material icon name key
+  final String icon; // Material icon name key
   final List<String> dos;
   final List<String> donts;
   final List<String> checklist;
@@ -25,7 +25,7 @@ class MeasureMethod {
 const paperMethod = MeasureMethod(
   id: 'paper',
   title: 'A4 paper',
-  subtitle: 'Foot on a full blank A4 sheet — production mode',
+  subtitle: 'Foot on a full blank A4 sheet — works on any phone',
   icon: 'description',
   guideAsset: 'assets/guides/rgb_guide.png',
   dos: [
@@ -46,6 +46,37 @@ const paperMethod = MeasureMethod(
     'Foot on paper',
     'No flash',
     'Dark floor',
+  ],
+);
+
+const depthMethod = MeasureMethod(
+  id: 'depth',
+  title: 'Depth / LiDAR',
+  subtitle: 'Metric depth on supported phones — no paper needed',
+  icon: 'view_in_ar',
+  guideAsset: 'assets/guides/depth_guide.png',
+  needsDepthHardware: true,
+  dos: [
+    'Overhead camera, parallel to floor',
+    'Entire foot inside the frame',
+    'One foot only on a clear floor',
+    'Soft light, flash off',
+    'Matte floor (not shiny tile)',
+  ],
+  donts: [
+    'Cropped toes or heel',
+    'Side angle',
+    'Cables, shoes, or clutter beside the foot',
+    'Harsh shadows / flash',
+    'Shiny reflective floor (breaks depth)',
+  ],
+  checklist: [
+    'Overhead',
+    'Full foot',
+    'Clear floor',
+    'Soft light',
+    'No flash',
+    'No shiny floor',
   ],
 );
 
@@ -100,48 +131,18 @@ const labMethods = <MeasureMethod>[
       'Dark floor',
     ],
   ),
-  MeasureMethod(
-    id: 'depth',
-    title: 'Depth / LiDAR',
-    subtitle: 'Lab only — LiDAR/AR depth phones',
-    icon: 'view_in_ar',
-    guideAsset: 'assets/guides/depth_guide.png',
-    needsDepthHardware: true,
-    dos: [
-      'Overhead camera, parallel to floor',
-      'Entire foot inside the frame',
-      'One foot only on a clear floor',
-      'Soft light, flash off',
-      'Matte floor (not shiny tile)',
-    ],
-    donts: [
-      'Cropped toes or heel',
-      'Side angle',
-      'Cables, shoes, or clutter beside the foot',
-      'Harsh shadows / flash',
-      'Shiny reflective floor (breaks LiDAR)',
-    ],
-    checklist: [
-      'Overhead',
-      'Full foot',
-      'Clear floor',
-      'Soft light',
-      'No flash',
-      'No shiny floor',
-      'Depth saved automatically',
-    ],
-  ),
 ];
 
-/// Production list is A4-only unless LAB_MODES=true at build time.
+/// Production: A4 paper + Depth/LiDAR. Lab modes add card/both.
 List<MeasureMethod> methodsForBuild({required bool labModes}) {
+  final core = <MeasureMethod>[paperMethod, depthMethod];
   if (labModes) {
-    return [paperMethod, ...labMethods];
+    return [...core, ...labMethods];
   }
-  return [paperMethod];
+  return core;
 }
 
 MeasureMethod methodById(String id) {
-  final all = [paperMethod, ...labMethods];
+  final all = [paperMethod, depthMethod, ...labMethods];
   return all.firstWhere((m) => m.id == id, orElse: () => paperMethod);
 }

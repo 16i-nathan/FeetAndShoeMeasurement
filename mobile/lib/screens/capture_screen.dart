@@ -8,7 +8,6 @@ import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import '../api/measure_api.dart';
-import '../config.dart';
 import '../models/measure_method.dart';
 import '../services/depth_capture.dart';
 import '../theme/app_theme.dart';
@@ -38,17 +37,17 @@ class _CaptureScreenState extends State<CaptureScreen> {
   CameraController? _controller;
   bool _ready = false;
   int _readyStreak = 0;
-  String _statusText = 'Starting camera…';
-  String _message = 'Allow camera access to begin.';
-  List<String> _hints = const [];
+  String _statusText = 'Starting…';
+  String _message = 'Allow camera';
   Map<String, bool> _checks = const {};
-  List<String> _errors = const [];
   bool _busy = false;
   bool _processing = false;
   bool _streaming = false;
+  /// Live depth availability (re-checked; not the stale home hint).
+  late bool _depthOk;
   DateTime _lastValidate = DateTime.fromMillisecondsSinceEpoch(0);
 
-  static const _readyHoldNeeded = 2;
+  static const _readyHoldNeeded = 1;
   static const _validateInterval = Duration(milliseconds: 900);
   static const _burstCount = 3;
 
@@ -58,11 +57,11 @@ class _CaptureScreenState extends State<CaptureScreen> {
   void initState() {
     super.initState();
     SystemChrome.setSystemUIOverlayStyle(SystemUiOverlayStyle.dark);
-    if (_mode == 'depth' && !widget.depthSupported) {
+    _depthOk = widget.depthSupported || _mode != 'depth';
+    if (_mode == 'depth' && !_depthOk) {
       setState(() {
         _statusText = 'No LiDAR';
-        _message =
-            'This device cannot capture depth. Production mode is A4 paper.';
+        _message = 'Use A4 instead';
       });
     }
     _initCamera();
@@ -101,15 +100,15 @@ class _CaptureScreenState extends State<CaptureScreen> {
     final cam = await Permission.camera.request();
     if (!cam.isGranted) {
       setState(() {
-        _statusText = 'Camera blocked';
-        _message = 'Enable camera permission in settings.';
+        _statusText = 'Blocked';
+        _message = 'Enable camera';
       });
       return;
     }
     if (widget.cameras.isEmpty) {
       setState(() {
         _statusText = 'No camera';
-        _message = 'No camera found. Use a physical phone, not browser emulation.';
+        _message = 'Use a phone';
       });
       return;
     }
@@ -133,27 +132,27 @@ class _CaptureScreenState extends State<CaptureScreen> {
       }
       setState(() {
         _controller = controller;
-        if (_mode == 'depth' && !widget.depthSupported) {
+        if (_mode == 'depth' && !_depthOk) {
           _statusText = 'No LiDAR';
-          _message = 'This device cannot capture depth.';
+          _message = 'Use A4 instead';
         } else if (resumeAligning) {
-          _statusText = 'Aligning…';
-          _message = 'Camera restored — re-check framing, then capture again.';
+          _statusText = 'Align…';
+          _message = 'Frame again';
           _ready = false;
           _readyStreak = 0;
         } else {
-          _statusText = 'Aligning…';
-          _message = 'Follow the guide — capture unlocks when Ready.';
+          _statusText = 'Align…';
+          _message = 'Match the guide';
         }
       });
-      if (!(_mode == 'depth' && !widget.depthSupported)) {
+      if (!(_mode == 'depth' && !_depthOk)) {
         await _startValidationStream();
       }
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _statusText = 'Camera error';
-        _message = '$e';
+        _statusText = 'Error';
+        _message = 'Camera failed';
       });
     }
   }
@@ -167,10 +166,20 @@ class _CaptureScreenState extends State<CaptureScreen> {
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _statusText = 'Stream error';
-        _message = 'Could not start preview validation: $e';
+        _statusText = 'Error';
+        _message = 'Preview failed';
       });
     }
+  }
+
+  String _shortMsg(String raw) {
+    final t = raw.trim();
+    if (t.isEmpty) return 'Adjust';
+    if (t.length <= 28) return t;
+    // Prefer first clause before em-dash / period.
+    final cut = t.split(RegExp(r'[—.–]| · ')).first.trim();
+    if (cut.length <= 32) return cut;
+    return '${cut.substring(0, 28).trim()}…';
   }
 
   void _onStreamFrame(CameraImage image) {
@@ -190,21 +199,17 @@ class _CaptureScreenState extends State<CaptureScreen> {
         _ready = lockedIn;
         _statusText = lockedIn
             ? 'Ready'
-            : (result.ready ? 'Hold steady…' : 'Not ready');
-        _message = lockedIn
-            ? 'Looking good — tap Capture'
-            : result.message;
-        _hints = result.hints;
+            : (result.ready ? 'Hold…' : 'Adjust');
+        _message = lockedIn ? 'Tap Capture' : _shortMsg(result.message);
         _checks = result.checks;
-        _errors = result.errors;
       });
     }).catchError((e) {
       if (!mounted || _processing) return;
       setState(() {
         _ready = false;
         _readyStreak = 0;
-        _statusText = 'Checking…';
-        _message = 'API unreachable ($apiBaseUrl). Start the server first.';
+        _statusText = 'Offline';
+        _message = 'Start API';
       });
     }).whenComplete(() {
       _busy = false;
@@ -213,7 +218,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
 
   bool get _canCapture {
     if (_processing) return false;
-    if (_mode == 'depth' && !widget.depthSupported) return false;
+    if (_mode == 'depth' && !_depthOk) return false;
     return _ready && (_controller?.value.isInitialized ?? false);
   }
 
@@ -222,10 +227,8 @@ class _CaptureScreenState extends State<CaptureScreen> {
 
     setState(() {
       _processing = true;
-      _statusText = 'Captured';
-      _message = _mode == 'depth'
-          ? 'Releasing camera for depth…'
-          : 'Capturing burst — measuring securely…';
+      _statusText = '…';
+      _message = _mode == 'depth' ? 'Depth…' : 'Burst…';
     });
 
     try {
@@ -233,10 +236,15 @@ class _CaptureScreenState extends State<CaptureScreen> {
       if (_mode == 'depth') {
         await _releaseCameraForDepth();
         if (!mounted) return;
-        setState(() => _message = 'Capturing LiDAR depth…');
-        final frame = await DepthCapture.capture();
+        setState(() => _message = 'Waking…');
+        try {
+          await DepthCapture.warmUp();
+        } catch (_) {}
         if (!mounted) return;
-        setState(() => _message = 'Depth captured — measuring…');
+        setState(() => _message = 'Depth…');
+        final frame = await DepthCapture.captureWithRetry(attempts: 3);
+        if (!mounted) return;
+        setState(() => _message = 'Measuring…');
         jobId = await _api.createJob(
           frame.jpegBytes,
           'depth',
@@ -262,7 +270,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
             await Future<void>.delayed(const Duration(milliseconds: 120));
           }
         }
-        setState(() => _message = 'Measuring securely in the background…');
+        setState(() => _message = 'Measuring…');
         jobId = await _api.createBurstJob(burst, _mode);
       }
 
@@ -287,10 +295,10 @@ class _CaptureScreenState extends State<CaptureScreen> {
         _processing = false;
         _ready = false;
         _readyStreak = 0;
-        _statusText = 'Blocked';
-        _message = job.error ??
-            job.message ??
-            'Measurement failed quality checks. Retake with the guidelines.';
+        _statusText = 'Retry';
+        _message = _shortMsg(
+          job.error ?? job.message ?? 'Retake',
+        );
       });
       if (_mode == 'depth' && _controller == null) {
         await _initCamera(resumeAligning: true);
@@ -301,13 +309,13 @@ class _CaptureScreenState extends State<CaptureScreen> {
       if (!mounted) return;
       final msg = e is PlatformException
           ? DepthCapture.friendlyMessage(e)
-          : '$e';
+          : 'Failed';
       setState(() {
         _processing = false;
         _ready = false;
         _readyStreak = 0;
         _statusText = 'Failed';
-        _message = msg;
+        _message = _shortMsg(msg);
       });
       if (_mode == 'depth' && _controller == null) {
         await _initCamera(resumeAligning: true);
@@ -320,14 +328,18 @@ class _CaptureScreenState extends State<CaptureScreen> {
   @override
   Widget build(BuildContext context) {
     final c = _controller;
+    final title = _mode == 'paper'
+        ? 'A4'
+        : (_mode == 'depth' ? 'Depth' : widget.method.title);
     return Scaffold(
       backgroundColor: AppColors.bg,
       appBar: AppBar(
-        title: Text(widget.method.title),
+        title: Text(title),
         actions: [
-          TextButton(
+          IconButton(
+            tooltip: 'Tips',
             onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Guidelines'),
+            icon: const Icon(Icons.lightbulb_outline_rounded),
           ),
         ],
       ),
@@ -346,24 +358,9 @@ class _CaptureScreenState extends State<CaptureScreen> {
                   else
                     Container(
                       color: const Color(0xFF111827),
-                      child: Center(
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const CircularProgressIndicator(
-                              color: AppColors.primary,
-                            ),
-                            if (_processing && _mode == 'depth') ...[
-                              const SizedBox(height: 12),
-                              const Text(
-                                'Depth sensor active…',
-                                style: TextStyle(
-                                  color: Colors.white70,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                            ],
-                          ],
+                      child: const Center(
+                        child: CircularProgressIndicator(
+                          color: AppColors.primary,
                         ),
                       ),
                     ),
@@ -383,96 +380,46 @@ class _CaptureScreenState extends State<CaptureScreen> {
                       text: _statusText,
                     ),
                   ),
-                  Positioned(
-                    left: 12,
-                    right: 12,
-                    bottom: 12,
-                    child: Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: Colors.white.withValues(alpha: 0.92),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: AppColors.line),
-                      ),
-                      child: Text(
-                        _message,
-                        style: const TextStyle(
-                          color: AppColors.ink,
-                          fontWeight: FontWeight.w600,
-                          height: 1.3,
+                  if (!_ready || _processing)
+                    Positioned(
+                      left: 12,
+                      right: 12,
+                      bottom: 12,
+                      child: Align(
+                        alignment: Alignment.bottomCenter,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 14,
+                            vertical: 8,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withValues(alpha: 0.92),
+                            borderRadius: BorderRadius.circular(999),
+                          ),
+                          child: Text(
+                            _message,
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                              color: AppColors.ink,
+                              fontWeight: FontWeight.w700,
+                              fontSize: 13,
+                            ),
+                          ),
                         ),
                       ),
                     ),
-                  ),
                 ],
               ),
             ),
           ),
           const SizedBox(height: 14),
           _CheckGrid(checks: _checks),
-          if (_hints.isNotEmpty) ...[
-            const SizedBox(height: 10),
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: AppColors.dangerSoft,
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'Fix before capture',
-                    style: TextStyle(
-                      fontWeight: FontWeight.w800,
-                      color: AppColors.danger,
-                    ),
-                  ),
-                  const SizedBox(height: 6),
-                  ..._hints.map(
-                    (h) => Padding(
-                      padding: const EdgeInsets.only(bottom: 4),
-                      child: Text('• $h',
-                          style: const TextStyle(color: AppColors.ink)),
-                    ),
-                  ),
-                  if (_errors.isNotEmpty) ...[
-                    const SizedBox(height: 6),
-                    Wrap(
-                      spacing: 6,
-                      children: _errors
-                          .map(
-                            (e) => Chip(
-                              label: Text(e, style: const TextStyle(fontSize: 11)),
-                              visualDensity: VisualDensity.compact,
-                              backgroundColor: Colors.white,
-                              side: const BorderSide(color: AppColors.danger),
-                            ),
-                          )
-                          .toList(),
-                    ),
-                  ],
-                ],
-              ),
-            ),
-          ],
           const SizedBox(height: 14),
           FilledButton(
             onPressed: _canCapture && !_processing ? _capture : null,
             child: Text(
-              _processing
-                  ? 'Working…'
-                  : (_canCapture ? 'Capture' : 'Waiting for Ready'),
+              _processing ? '…' : (_canCapture ? 'Capture' : 'Wait'),
             ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            _canCapture
-                ? 'Three photos will be taken and averaged for a stable result.'
-                : 'Capture is locked until all checks are green. This prevents bad results.',
-            textAlign: TextAlign.center,
-            style: const TextStyle(color: AppColors.muted, fontSize: 12, height: 1.35),
           ),
         ],
       ),
@@ -528,7 +475,7 @@ class _CheckGrid extends StatelessWidget {
     'brightness': 'Light',
     'sharpness': 'Focus',
     'no_glare': 'No glare',
-    'reference': 'Paper',
+    'reference': 'Reference',
     'full_frame': 'Full frame',
     'content': 'Foot',
     'tilt': 'Tilt',

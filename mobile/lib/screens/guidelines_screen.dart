@@ -2,8 +2,11 @@ import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 
 import '../models/measure_method.dart';
+import '../services/depth_capture.dart';
 import '../theme/app_theme.dart';
+import '../widgets/visual_tips.dart';
 import 'capture_screen.dart';
+import 'upload_screen.dart';
 
 class GuidelinesScreen extends StatefulWidget {
   const GuidelinesScreen({
@@ -15,6 +18,7 @@ class GuidelinesScreen extends StatefulWidget {
 
   final MeasureMethod method;
   final List<CameraDescription> cameras;
+  /// Home-screen hint only — re-checked when opening Camera for Depth.
   final bool depthSupported;
 
   @override
@@ -22,155 +26,138 @@ class GuidelinesScreen extends StatefulWidget {
 }
 
 class _GuidelinesScreenState extends State<GuidelinesScreen> {
-  bool _acked = false;
+  bool _waking = false;
+  String? _depthNote;
+
+  Future<void> _openCamera() async {
+    final m = widget.method;
+    if (m.id != 'depth') {
+      _pushCapture(depthOk: true);
+      return;
+    }
+
+    setState(() {
+      _waking = true;
+      _depthNote = null;
+    });
+
+    try {
+      final ok = await DepthCapture.prepareForCapture();
+      if (!mounted) return;
+      if (!ok) {
+        setState(() {
+          _waking = false;
+          _depthNote = 'No LiDAR on this device';
+        });
+        return;
+      }
+      setState(() => _waking = false);
+      _pushCapture(depthOk: true);
+    } catch (_) {
+      if (!mounted) return;
+      // Soft: still open capture and let retry path try.
+      setState(() {
+        _waking = false;
+        _depthNote = 'AR waking — try Capture';
+      });
+      _pushCapture(depthOk: true);
+    }
+  }
+
+  void _pushCapture({required bool depthOk}) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => CaptureScreen(
+          cameras: widget.cameras,
+          method: widget.method,
+          depthSupported: depthOk,
+        ),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
     final m = widget.method;
     return Scaffold(
       appBar: AppBar(
-        title: Text(m.title),
+        title: Text(
+          m.id == 'paper' ? 'A4' : (m.id == 'depth' ? 'Depth' : m.title),
+        ),
       ),
-      body: ListView(
-        padding: const EdgeInsets.fromLTRB(20, 8, 20, 28),
-        children: [
-          ClipRRect(
-            borderRadius: BorderRadius.circular(16),
-            child: Image.asset(
-              m.guideAsset,
-              fit: BoxFit.fitWidth,
-            ),
-          ),
-          const SizedBox(height: 16),
-          const Text(
-            'Do this',
-            style: TextStyle(
-              fontWeight: FontWeight.w800,
-              fontSize: 16,
-              color: AppColors.ready,
-            ),
-          ),
-          const SizedBox(height: 8),
-          ...m.dos.map((t) => _Bullet(text: t, ok: true)),
-          const SizedBox(height: 14),
-          const Text(
-            'Avoid this',
-            style: TextStyle(
-              fontWeight: FontWeight.w800,
-              fontSize: 16,
-              color: AppColors.danger,
-            ),
-          ),
-          const SizedBox(height: 8),
-          ...m.donts.map((t) => _Bullet(text: t, ok: false)),
-          const SizedBox(height: 16),
-          Container(
-            padding: const EdgeInsets.all(14),
-            decoration: BoxDecoration(
-              color: AppColors.warnSoft,
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: const Color(0xFFFDE68A)),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Row(
-                  children: [
-                    Icon(Icons.lightbulb_outline, color: AppColors.wait),
-                    SizedBox(width: 8),
-                    Text(
-                      'Quick checklist',
-                      style: TextStyle(
-                        fontWeight: FontWeight.w800,
-                        color: AppColors.ink,
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+          child: Column(
+            children: [
+              Expanded(
+                child: Center(
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(16),
+                    child: Image.asset(
+                      m.guideAsset,
+                      fit: BoxFit.contain,
+                      errorBuilder: (_, __, ___) => SetupHeroGraphic(
+                        mode: m.id == 'depth' ? 'depth' : 'paper',
                       ),
                     ),
-                  ],
+                  ),
                 ),
+              ),
+              if (_depthNote != null) ...[
                 const SizedBox(height: 8),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: m.checklist
-                      .map(
-                        (c) => Chip(
-                          label: Text(c, style: const TextStyle(fontSize: 12)),
-                          backgroundColor: Colors.white,
-                          side: const BorderSide(color: AppColors.line),
-                          visualDensity: VisualDensity.compact,
-                        ),
-                      )
-                      .toList(),
+                Container(
+                  width: double.infinity,
+                  padding:
+                      const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
+                  decoration: BoxDecoration(
+                    color: AppColors.dangerSoft,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    _depthNote!,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.ink,
+                    ),
+                  ),
                 ),
               ],
-            ),
+              const SizedBox(height: 12),
+              FilledButton.icon(
+                onPressed: _waking ? null : _openCamera,
+                icon: _waking
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.photo_camera_rounded),
+                label: Text(_waking ? 'Waking AR…' : 'Camera'),
+              ),
+              if (m.id != 'depth') ...[
+                const SizedBox(height: 10),
+                OutlinedButton.icon(
+                  onPressed: _waking
+                      ? null
+                      : () {
+                          Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (_) => UploadMeasureScreen(
+                                cameras: widget.cameras,
+                                method: m,
+                              ),
+                            ),
+                          );
+                        },
+                  icon: const Icon(Icons.image_outlined),
+                  label: const Text('Gallery'),
+                ),
+              ],
+            ],
           ),
-          const SizedBox(height: 16),
-          CheckboxListTile(
-            value: _acked,
-            onChanged: (v) => setState(() => _acked = v ?? false),
-            contentPadding: EdgeInsets.zero,
-            controlAffinity: ListTileControlAffinity.leading,
-            title: const Text(
-              'I understand — bad photos will be blocked until Ready',
-              style: TextStyle(fontSize: 14, color: AppColors.ink),
-            ),
-          ),
-          const SizedBox(height: 8),
-          FilledButton(
-            onPressed: !_acked
-                ? null
-                : () {
-                    Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (_) => CaptureScreen(
-                          cameras: widget.cameras,
-                          method: m,
-                          depthSupported: widget.depthSupported,
-                        ),
-                      ),
-                    );
-                  },
-            child: const Text('Open camera'),
-          ),
-          const SizedBox(height: 8),
-          const Text(
-            'Capture stays locked until lighting, framing, and reference checks pass.',
-            style: TextStyle(color: AppColors.muted, fontSize: 12, height: 1.35),
-            textAlign: TextAlign.center,
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _Bullet extends StatelessWidget {
-  const _Bullet({required this.text, required this.ok});
-
-  final String text;
-  final bool ok;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(
-            ok ? Icons.check_circle : Icons.cancel,
-            size: 18,
-            color: ok ? AppColors.ready : AppColors.danger,
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              text,
-              style: const TextStyle(color: AppColors.ink, height: 1.35),
-            ),
-          ),
-        ],
+        ),
       ),
     );
   }

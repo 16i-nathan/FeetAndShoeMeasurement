@@ -103,13 +103,13 @@ def _round_cm(cm: float) -> float:
 
 
 def _assert_mode(mode: str):
-    if mode == 'paper':
+    if mode in ('paper', 'depth'):
         return
-    if LAB_MODES and mode in ('card', 'both', 'depth'):
+    if LAB_MODES and mode in ('card', 'both'):
         return
     raise HTTPException(
         status_code=400,
-        detail='Production supports mode=paper only. Set LAB_MODES=1 for lab modes.',
+        detail='Supported modes: paper, depth. Set LAB_MODES=1 for card/both.',
     )
 
 
@@ -143,7 +143,6 @@ def _run_job(job_id: str):
             preview = None
             preview_file = out_dir / 'preview.jpg'
             if not preview_file.is_file():
-                # burst stores under frame_0
                 alt = out_dir / 'frame_0' / 'preview.jpg'
                 if alt.is_file():
                     preview_file = alt
@@ -165,26 +164,65 @@ def _run_job(job_id: str):
             )
             return
 
-        # Lab modes only
-        from main import (
-            measure_with_both,
-            measure_with_card,
-            measure_with_depth,
-            measure_with_paper,
-        )
+        if mode == 'depth':
+            from main import measure_with_depth
+
+            depth_path = job.get('depth_path')
+            if not depth_path:
+                raise ValueError('Depth mode needs a depth map from LiDAR/AR capture')
+            rgb = rgbs[0]
+            fx = job.get('fx')
+            fy = job.get('fy')
+            cx = job.get('cx')
+            cy = job.get('cy')
+            # Re-read with scale for intrinsics if image was downscaled on load
+            _, img_scale = _read_rgb(Path(job['rgb_path']).read_bytes())
+            fx_s = fx * img_scale if fx is not None else None
+            fy_s = fy * img_scale if fy is not None else None
+            cx_s = cx * img_scale if cx is not None else None
+            cy_s = cy * img_scale if cy is not None else None
+            cm = measure_with_depth(
+                rgb,
+                depth_path,
+                depth_scale=job.get('depth_scale'),
+                fx=fx_s,
+                fy=fy_s,
+                cx=cx_s,
+                cy=cy_s,
+            )
+            sizes = sizes_from_cm(cm)
+            sizes['cm'] = _round_cm(cm)
+            sizes['cm_raw'] = round(float(cm), 2)
+            sizes['confidence'] = 0.85
+            preview = None
+            for name in ('depth_detect.jpg', 'depth_vis.jpg'):
+                src = ROOT / 'output' / name
+                if src.is_file():
+                    dest = out_dir / name
+                    dest.write_bytes(src.read_bytes())
+                    preview = f'/output/jobs/{job_id}/{name}'
+                    break
+            STORE.update(
+                job_id,
+                status='done',
+                finished_at=time.time(),
+                result=sizes,
+                preview_url=preview,
+                error=None,
+                meta={'mode': 'depth'},
+            )
+            return
+
+        # Lab RGB modes
+        from main import measure_with_both, measure_with_card
 
         rgb = rgbs[0]
         if mode == 'card':
             cm = measure_with_card(rgb)
         elif mode == 'both':
             cm = measure_with_both(rgb)
-        elif mode == 'depth':
-            depth_path = job.get('depth_path')
-            if not depth_path:
-                raise ValueError('Depth mode needs a depth map')
-            cm = measure_with_depth(rgb, depth_path)
         else:
-            cm = measure_with_paper(rgb)
+            raise ValueError(f'Unsupported mode: {mode}')
         sizes = sizes_from_cm(cm)
         sizes['cm'] = _round_cm(cm)
         STORE.update(

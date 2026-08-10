@@ -35,62 +35,53 @@ class ResultScreen extends StatelessWidget {
         automaticallyImplyLeading: false,
       ),
       body: ListView(
-        padding: const EdgeInsets.fromLTRB(20, 12, 20, 28),
+        padding: const EdgeInsets.fromLTRB(20, 8, 20, 28),
         children: [
           Container(
-            padding: const EdgeInsets.all(20),
+            padding: const EdgeInsets.fromLTRB(20, 24, 20, 22),
             decoration: BoxDecoration(
               color: AppColors.surface,
-              borderRadius: BorderRadius.circular(20),
+              borderRadius: BorderRadius.circular(24),
               border: Border.all(color: AppColors.line),
             ),
             child: Column(
               children: [
-                const Icon(Icons.verified_rounded,
-                    color: AppColors.ready, size: 36),
-                const SizedBox(height: 8),
-                const Text(
-                  'Measurement complete',
-                  style: TextStyle(
-                    fontWeight: FontWeight.w800,
-                    fontSize: 18,
-                    color: AppColors.ink,
+                Container(
+                  width: 56,
+                  height: 56,
+                  decoration: const BoxDecoration(
+                    color: AppColors.primarySoft,
+                    shape: BoxShape.circle,
                   ),
+                  child: const Icon(Icons.check_rounded,
+                      color: AppColors.ready, size: 32),
                 ),
-                const SizedBox(height: 4),
-                Text(
-                  'Mode: $mode',
-                  style: const TextStyle(color: AppColors.muted),
-                ),
-                if (conf != null) ...[
-                  const SizedBox(height: 4),
-                  Text(
-                    'Confidence ${(conf * 100).round()}%',
-                    style: const TextStyle(color: AppColors.muted, fontSize: 13),
-                  ),
-                ],
-                const SizedBox(height: 18),
+                const SizedBox(height: 14),
                 Text(
                   result.displayCm,
                   style: const TextStyle(
-                    fontSize: 40,
+                    fontSize: 48,
                     fontWeight: FontWeight.w900,
                     color: AppColors.ink,
-                    letterSpacing: -1,
+                    letterSpacing: -1.5,
                   ),
                   textAlign: TextAlign.center,
                 ),
-                const Text(
-                  'Foot length (nearest 0.5 cm)',
-                  style: TextStyle(color: AppColors.muted),
-                ),
+                if (conf != null)
+                  Text(
+                    '${(conf * 100).round()}%',
+                    style: const TextStyle(
+                      color: AppColors.muted,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
               ],
             ),
           ),
           if (preview != null) ...[
-            const SizedBox(height: 12),
+            const SizedBox(height: 14),
             ClipRRect(
-              borderRadius: BorderRadius.circular(16),
+              borderRadius: BorderRadius.circular(20),
               child: Image.network(
                 preview,
                 fit: BoxFit.cover,
@@ -98,39 +89,21 @@ class ResultScreen extends StatelessWidget {
               ),
             ),
           ],
-          const SizedBox(height: 12),
+          const SizedBox(height: 14),
           Row(
             children: [
               Expanded(child: _SizeCard(label: 'EU', value: '${result.eu}')),
               const SizedBox(width: 8),
               Expanded(
-                  child: _SizeCard(label: 'US Men', value: '${result.usMen}')),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Row(
-            children: [
+                  child: _SizeCard(label: 'US M', value: '${result.usMen}')),
+              const SizedBox(width: 8),
               Expanded(
-                  child:
-                      _SizeCard(label: 'US Women', value: '${result.usWomen}')),
+                  child: _SizeCard(label: 'US W', value: '${result.usWomen}')),
               const SizedBox(width: 8),
               Expanded(child: _SizeCard(label: 'UK', value: '${result.uk}')),
             ],
           ),
-          const SizedBox(height: 16),
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: AppColors.warnSoft,
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: const Text(
-              'Sizes are approximate conversions — not brand fitting advice. '
-              'Re-measure if the ± range is large or confidence is low.',
-              style: TextStyle(color: AppColors.ink, fontSize: 13, height: 1.35),
-            ),
-          ),
-          const SizedBox(height: 18),
+          const SizedBox(height: 22),
           FilledButton(
             onPressed: () {
               Navigator.of(context).pushAndRemoveUntil(
@@ -140,7 +113,7 @@ class ResultScreen extends StatelessWidget {
                 (_) => false,
               );
             },
-            child: const Text('Measure again'),
+            child: const Text('Again'),
           ),
         ],
       ),
@@ -157,21 +130,24 @@ class _SizeCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 6),
       decoration: BoxDecoration(
         color: AppColors.surface,
         borderRadius: BorderRadius.circular(14),
         border: Border.all(color: AppColors.line),
       ),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(value,
               style: const TextStyle(
-                  fontSize: 22,
-                  fontWeight: FontWeight.w800,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w900,
                   color: AppColors.ink)),
-          Text(label, style: const TextStyle(color: AppColors.muted)),
+          Text(label,
+              style: const TextStyle(
+                  color: AppColors.muted,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600)),
         ],
       ),
     );

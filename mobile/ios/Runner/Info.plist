@@ -6,6 +6,8 @@
 	<true/>
 	<key>NSCameraUsageDescription</key>
 	<string>Camera and LiDAR are used to capture your foot for size measurement.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Choose an existing top-down photo of your foot on A4 paper to measure.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>

@@ -1,4 +1,5 @@
 import 'package:camera/camera.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 
 import '../config.dart';
@@ -18,8 +19,8 @@ class MethodScreen extends StatefulWidget {
 
 class _MethodScreenState extends State<MethodScreen> {
   String? _selected;
-  bool _depthSupported = false;
-  bool _checkingDepth = true;
+  /// Soft hint only — Depth is never disabled here.
+  bool _depthHint = true;
 
   List<MeasureMethod> get _methods => methodsForBuild(labModes: labModes);
 
@@ -27,32 +28,28 @@ class _MethodScreenState extends State<MethodScreen> {
   void initState() {
     super.initState();
     _selected = paperMethod.id;
-    _loadDepth();
-    // Production: skip picker when only A4 is available.
-    if (!labModes) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
-        _openGuidelines(paperMethod);
-      });
-    }
+    _probeDepthHint();
   }
 
-  Future<void> _loadDepth() async {
+  Future<void> _probeDepthHint() async {
+    if (kIsWeb) {
+      if (!mounted) return;
+      setState(() => _depthHint = false);
+      return;
+    }
     final ok = await DepthCapture.isSupported();
     if (!mounted) return;
-    setState(() {
-      _depthSupported = ok;
-      _checkingDepth = false;
-    });
+    setState(() => _depthHint = ok);
   }
 
-  void _openGuidelines(MeasureMethod method) {
+  void _open(MeasureMethod method) {
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => GuidelinesScreen(
           method: method,
           cameras: widget.cameras,
-          depthSupported: _depthSupported,
+          // Hint only; Camera press re-checks + warms AR.
+          depthSupported: method.id != 'depth' || _depthHint,
         ),
       ),
     );
@@ -63,11 +60,11 @@ class _MethodScreenState extends State<MethodScreen> {
       case 'credit_card':
         return Icons.credit_card_rounded;
       case 'description':
-        return Icons.description_outlined;
+        return Icons.description_rounded;
       case 'layers':
-        return Icons.layers_outlined;
+        return Icons.layers_rounded;
       case 'view_in_ar':
-        return Icons.view_in_ar_outlined;
+        return Icons.view_in_ar_rounded;
       default:
         return Icons.straighten;
     }
@@ -75,130 +72,140 @@ class _MethodScreenState extends State<MethodScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (!labModes) {
-      return const Scaffold(
-        body: Center(child: CircularProgressIndicator()),
-      );
-    }
-
     return Scaffold(
       body: SafeArea(
-        child: ListView(
-          padding: const EdgeInsets.fromLTRB(20, 20, 20, 28),
-          children: [
-            Text(
-              'Foot Measure',
-              style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                    fontWeight: FontWeight.w800,
-                    color: AppColors.ink,
-                    letterSpacing: -0.6,
-                  ),
-            ),
-            const SizedBox(height: 6),
-            const Text(
-              'Lab modes enabled. Production builds use A4 paper only.',
-              style: TextStyle(color: AppColors.muted, height: 1.4),
-            ),
-            const SizedBox(height: 20),
-            ..._methods.map((m) {
-              final selected = _selected == m.id;
-              final disabled =
-                  m.needsDepthHardware && !_depthSupported && !_checkingDepth;
-              return Padding(
-                padding: const EdgeInsets.only(bottom: 10),
-                child: Material(
-                  color: AppColors.surface,
-                  borderRadius: BorderRadius.circular(16),
-                  child: InkWell(
-                    borderRadius: BorderRadius.circular(16),
-                    onTap: disabled
-                        ? null
-                        : () => setState(() => _selected = m.id),
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 180),
-                      padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(
-                          color: selected
-                              ? AppColors.primary
-                              : AppColors.line,
-                          width: selected ? 2 : 1,
-                        ),
-                        color: disabled
-                            ? AppColors.bg
-                            : (selected
-                                ? AppColors.primarySoft.withValues(alpha: 0.35)
-                                : AppColors.surface),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 28, 20, 24),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                'Foot Measure',
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                      fontWeight: FontWeight.w900,
+                      color: AppColors.ink,
+                      letterSpacing: -0.8,
+                    ),
+              ),
+              const SizedBox(height: 6),
+              const Text(
+                'Pick a way',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: AppColors.muted, fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 28),
+              Expanded(
+                child: ListView(
+                  children: [
+                    for (final m in _methods) ...[
+                      _ModeCard(
+                        title: m.id == 'paper'
+                            ? 'A4'
+                            : (m.id == 'depth' ? 'Depth' : m.title),
+                        subtitle: m.id == 'paper'
+                            ? 'Any phone'
+                            : (m.id == 'depth' ? 'LiDAR / AR' : m.subtitle),
+                        icon: _icon(m.icon),
+                        selected: _selected == m.id,
+                        onTap: () => setState(() => _selected = m.id),
                       ),
-                      child: Row(
-                        children: [
-                          Container(
-                            width: 48,
-                            height: 48,
-                            decoration: BoxDecoration(
-                              color: AppColors.bg,
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            child: Icon(
-                              _icon(m.icon),
-                              color: disabled
-                                  ? AppColors.muted
-                                  : AppColors.primary,
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  m.title,
-                                  style: TextStyle(
-                                    fontWeight: FontWeight.w700,
-                                    fontSize: 16,
-                                    color: disabled
-                                        ? AppColors.muted
-                                        : AppColors.ink,
-                                  ),
-                                ),
-                                const SizedBox(height: 2),
-                                Text(
-                                  disabled
-                                      ? 'Not available on this device (no LiDAR/AR depth)'
-                                      : m.subtitle,
-                                  style: const TextStyle(
-                                    color: AppColors.muted,
-                                    fontSize: 13,
-                                    height: 1.3,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                          Icon(
-                            selected
-                                ? Icons.check_circle_rounded
-                                : Icons.circle_outlined,
-                            color: selected
-                                ? AppColors.primary
-                                : AppColors.line,
-                          ),
-                        ],
+                      const SizedBox(height: 12),
+                    ],
+                  ],
+                ),
+              ),
+              FilledButton(
+                onPressed: _selected == null
+                    ? null
+                    : () => _open(methodById(_selected!)),
+                child: const Text('Next'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ModeCard extends StatelessWidget {
+  const _ModeCard({
+    required this.title,
+    required this.subtitle,
+    required this.icon,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String title;
+  final String subtitle;
+  final IconData icon;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(22),
+        onTap: onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 20),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(22),
+            border: Border.all(
+              color: selected ? AppColors.primary : AppColors.line,
+              width: selected ? 2.5 : 1,
+            ),
+            color: selected
+                ? AppColors.primarySoft.withValues(alpha: 0.45)
+                : AppColors.surface,
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 72,
+                height: 72,
+                decoration: BoxDecoration(
+                  color: AppColors.primarySoft,
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Icon(icon, size: 36, color: AppColors.primary),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: const TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.w900,
+                        color: AppColors.ink,
                       ),
                     ),
-                  ),
+                    const SizedBox(height: 2),
+                    Text(
+                      subtitle,
+                      style: const TextStyle(
+                        color: AppColors.muted,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
                 ),
-              );
-            }),
-            const SizedBox(height: 8),
-            FilledButton(
-              onPressed: _selected == null
-                  ? null
-                  : () => _openGuidelines(methodById(_selected!)),
-              child: const Text('Continue to guidelines'),
-            ),
-          ],
+              ),
+              Icon(
+                selected ? Icons.check_circle_rounded : Icons.circle_outlined,
+                color: selected ? AppColors.primary : AppColors.line,
+                size: 28,
+              ),
+            ],
+          ),
         ),
       ),
     );

@@ -10,7 +10,13 @@ final class DepthCapturePlugin: NSObject, FlutterPlugin, ARSessionDelegate {
   private var pendingResult: FlutterResult?
   private var timeoutWork: DispatchWorkItem?
   private var framesSeen = 0
-  private var attempt = 0
+  private var mode: Mode = .idle
+
+  private enum Mode {
+    case idle
+    case warmUp
+    case capture
+  }
 
   init(channel: FlutterMethodChannel) {
     self.channel = channel
@@ -34,11 +40,37 @@ final class DepthCapturePlugin: NSObject, FlutterPlugin, ARSessionDelegate {
       } else {
         result(false)
       }
+    case "warmUp":
+      warmUp(result: result)
     case "capture":
       capture(result: result)
     default:
       result(FlutterMethodNotImplemented)
     }
+  }
+
+  private func warmUp(result: @escaping FlutterResult) {
+    guard #available(iOS 14.0, *) else {
+      result(FlutterError(code: "unsupported", message: "iOS 14+ required", details: nil))
+      return
+    }
+    guard ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) else {
+      result(FlutterError(
+        code: "no_lidar",
+        message: "This device has no LiDAR / scene depth support.",
+        details: nil
+      ))
+      return
+    }
+    guard pendingResult == nil else {
+      result(FlutterError(code: "busy", message: "Depth already running", details: nil))
+      return
+    }
+
+    pendingResult = result
+    mode = .warmUp
+    framesSeen = 0
+    startSession(timeoutSeconds: 3.5)
   }
 
   private func capture(result: @escaping FlutterResult) {
@@ -60,13 +92,13 @@ final class DepthCapturePlugin: NSObject, FlutterPlugin, ARSessionDelegate {
     }
 
     pendingResult = result
+    mode = .capture
     framesSeen = 0
-    attempt += 1
-    startSession()
+    startSession(timeoutSeconds: 18)
   }
 
   @available(iOS 14.0, *)
-  private func startSession() {
+  private func startSession(timeoutSeconds: Double) {
     let session = ARSession()
     session.delegate = self
     session.delegateQueue = DispatchQueue.main
@@ -77,24 +109,35 @@ final class DepthCapturePlugin: NSObject, FlutterPlugin, ARSessionDelegate {
     if ARWorldTrackingConfiguration.supportsFrameSemantics(.smoothedSceneDepth) {
       config.frameSemantics.insert(.smoothedSceneDepth)
     }
-    // Fresh tracking after Flutter camera released the lens.
     session.run(config, options: [.resetTracking, .removeExistingAnchors])
 
     timeoutWork?.cancel()
     let timeout = DispatchWorkItem { [weak self] in
-      self?.finishError(
-        code: "timeout",
-        message: "Timed out waiting for LiDAR depth. Point at the floor and retry."
-      )
+      guard let self = self else { return }
+      if self.mode == .warmUp {
+        // Warm-up is best-effort — succeeding at starting the session is enough.
+        self.finishOk(["ok": true, "frames": self.framesSeen])
+      } else {
+        self.finishError(
+          code: "timeout",
+          message: "Depth sensor still waking. Point at the floor and tap Capture again."
+        )
+      }
     }
     timeoutWork = timeout
-    DispatchQueue.main.asyncAfter(deadline: .now() + 12, execute: timeout)
+    DispatchQueue.main.asyncAfter(deadline: .now() + timeoutSeconds, execute: timeout)
   }
 
   func session(_ session: ARSession, didFailWithError error: Error) {
     guard pendingResult != nil else { return }
     let ns = error as NSError
-    // Camera busy / interrupted — common right after releasing AVCaptureSession.
+    if mode == .warmUp {
+      finishError(
+        code: "camera_busy",
+        message: "Camera still in use. Wait a second, then open Depth again."
+      )
+      return
+    }
     if ns.domain == "com.apple.arkit.error" || ns.localizedDescription.lowercased().contains("camera") {
       finishError(
         code: "camera_busy",
@@ -111,7 +154,6 @@ final class DepthCapturePlugin: NSObject, FlutterPlugin, ARSessionDelegate {
 
   func sessionInterruptionEnded(_ session: ARSession) {
     guard #available(iOS 14.0, *), pendingResult != nil else { return }
-    // Resume after interruption (e.g. returning from another app).
     let config = ARWorldTrackingConfiguration()
     config.frameSemantics.insert(.sceneDepth)
     if ARWorldTrackingConfiguration.supportsFrameSemantics(.smoothedSceneDepth) {
@@ -123,8 +165,17 @@ final class DepthCapturePlugin: NSObject, FlutterPlugin, ARSessionDelegate {
   func session(_ session: ARSession, didUpdate frame: ARFrame) {
     guard pendingResult != nil else { return }
     framesSeen += 1
-    // Depth is often empty for the first few frames after run().
-    if framesSeen < 5 { return }
+
+    if mode == .warmUp {
+      // Enough frames to wake LiDAR / tracking, then finish.
+      if framesSeen >= 12 {
+        finishOk(["ok": true, "frames": framesSeen])
+      }
+      return
+    }
+
+    // Depth is often empty for the first frames after run().
+    if framesSeen < 8 { return }
 
     let depthData = frame.smoothedSceneDepth ?? frame.sceneDepth
     guard let depthData = depthData else { return }
@@ -179,6 +230,7 @@ final class DepthCapturePlugin: NSObject, FlutterPlugin, ARSessionDelegate {
     session = nil
     pendingResult = nil
     framesSeen = 0
+    mode = .idle
   }
 
   private static func hasUsableDepth(_ data: Data) -> Bool {

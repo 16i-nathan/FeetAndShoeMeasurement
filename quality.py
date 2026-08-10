@@ -23,7 +23,10 @@ class QualityThresholds:
     paper_coverage_max: float = 0.85
     foot_coverage_min: float = 0.015
     foot_on_paper_min: float = 0.45
-    aspect_err_max: float = 0.18
+    foot_aspect_min: float = 1.25
+    # Only flag incomplete foot when the blob is clearly short vs the sheet
+    foot_to_paper_min: float = 0.42
+    aspect_err_max: float = 0.22
     tilt_max: float = 0.22  # |1 - aspect/expected| proxy + corner skew
     border_touch_max: float = 0.10
     paper_score_min: float = 0.40
@@ -166,7 +169,8 @@ def evaluate_masks(
 
     paper = largest_component(paper_mask)
     foot = (foot_mask > 0).astype(np.uint8) * 255
-    # Exclusive class maps put foot pixels outside "paper"; use sheet = paper∪foot.
+    # Exclusive class maps put foot pixels outside "paper"; use sheet = paper∪foot
+    # for coverage / on-paper checks — but prefer paper-only for A4 corners.
     sheet = largest_component(cv2.bitwise_or(paper, foot))
     if not np.any(sheet):
         sheet = paper
@@ -180,7 +184,10 @@ def evaluate_masks(
     foot_on_paper = float(np.sum(cv2.bitwise_and(foot, sheet_dil) > 0) / foot_px)
     touch = border_touch_ratio(sheet)
 
-    corners, rect_score = paper_corners_from_mask(sheet)
+    # Prefer paper-only corners so the foot blob does not inflate the A4 quad
+    corners, rect_score = paper_corners_from_mask(paper if np.mean(paper > 0) > 0.08 else sheet)
+    if corners is None:
+        corners, rect_score = paper_corners_from_mask(sheet)
     aspect_err = 1.0
     tilt = 1.0
     if corners is not None:
@@ -206,12 +213,27 @@ def evaluate_masks(
         )
 
     foot_score = 0.0
-    if foot_cov >= thr.foot_coverage_min:
+    foot_aspect = 0.0
+    foot_to_paper = 0.0
+    if foot_cov >= thr.foot_coverage_min and np.any(foot):
+        fx, fy, fw, fh = cv2.boundingRect(foot)
+        foot_aspect = max(fw, fh) / max(min(fw, fh), 1)
+        if corners is not None:
+            tl, tr, br, bl = corners
+            paper_long = max(
+                np.linalg.norm(tr - tl),
+                np.linalg.norm(br - bl),
+                np.linalg.norm(bl - tl),
+                np.linalg.norm(br - tr),
+            )
+            foot_long = float(max(fw, fh))
+            foot_to_paper = foot_long / max(paper_long, 1.0)
         foot_score = float(
             np.clip(
-                0.45 * np.clip(foot_cov / 0.15, 0, 1)
-                + 0.40 * foot_on_paper
-                + 0.15 * (1.0 if foot_cov < 0.35 else 0.5),
+                0.35 * np.clip(foot_cov / 0.12, 0, 1)
+                + 0.30 * foot_on_paper
+                + 0.20 * np.clip((foot_aspect - 1.0) / 1.5, 0, 1)
+                + 0.15 * np.clip(foot_to_paper / 0.75, 0, 1),
                 0,
                 1,
             )
@@ -219,10 +241,11 @@ def evaluate_masks(
 
     if paper_cov < thr.paper_coverage_min or corners is None:
         errors.append('NO_PAPER')
-        hints.append('Show the full white A4 sheet with all four corners visible')
+        hints.append('Show the full A4 sheet (white or light) with all four corners visible')
     elif aspect_err > thr.aspect_err_max:
         errors.append('HIGH_TILT')
         hints.append('Hold the phone more top-down so the paper looks rectangular')
+        # Keep chip honest
     elif tilt > thr.tilt_max:
         errors.append('HIGH_TILT')
         hints.append('Reduce camera angle — keep the phone parallel to the floor')
@@ -240,6 +263,18 @@ def evaluate_masks(
     elif foot_on_paper < thr.foot_on_paper_min:
         errors.append('NO_FOOT')
         hints.append('Keep the entire foot on the A4 sheet')
+    elif foot_to_paper > 0 and foot_to_paper < thr.foot_to_paper_min:
+        # Incomplete detection only when foot is short vs paper (not aspect —
+        # real feet + pant cuffs often look ~1.3–1.5 aspect on A4).
+        errors.append('PARTIAL_FOOT')
+        hints.append(
+            'Foot looks incomplete in detection — retake top-down with full heel and toes on the paper'
+        )
+    elif foot_aspect > 0 and foot_aspect < thr.foot_aspect_min and foot_to_paper < 0.55:
+        errors.append('PARTIAL_FOOT')
+        hints.append(
+            'Foot looks incomplete in detection — retake top-down with full heel and toes on the paper'
+        )
 
     confidence = float(np.clip(0.5 * paper_score + 0.5 * foot_score, 0, 1))
     if confidence < thr.conf_min and 'LOW_CONF' not in errors:

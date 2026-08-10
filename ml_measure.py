@@ -88,7 +88,11 @@ def draw_preview(
 ) -> np.ndarray:
     vis = rgb.copy()
     overlay = vis.copy()
-    overlay[paper_mask > 0] = (80, 160, 255)
+    sheet = cv2.bitwise_or(
+        (paper_mask > 0).astype(np.uint8) * 255,
+        (foot_mask > 0).astype(np.uint8) * 255,
+    )
+    overlay[sheet > 0] = (80, 160, 255)
     overlay[foot_mask > 0] = (255, 140, 40)
     vis = cv2.addWeighted(vis, 0.65, overlay, 0.35, 0)
     if corners is not None:
@@ -98,23 +102,20 @@ def draw_preview(
             cv2.circle(vis, tuple(p), 5, (0, 255, 0), -1)
     if cm is not None:
         cv2.putText(
-            vis,
-            f'{cm:.1f} cm',
-            (16, 40),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            1.1,
-            (20, 20, 20),
-            3,
+            vis, f'{cm:.1f} cm', (16, 40),
+            cv2.FONT_HERSHEY_SIMPLEX, 1.1, (20, 20, 20), 3,
         )
         cv2.putText(
-            vis,
-            f'{cm:.1f} cm',
-            (16, 40),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            1.1,
-            (255, 255, 255),
-            2,
+            vis, f'{cm:.1f} cm', (16, 40),
+            cv2.FONT_HERSHEY_SIMPLEX, 1.1, (255, 255, 255), 2,
         )
+    # Crop to sheet (+padding) so preview is not a weird full-frame crop of the leg
+    if np.any(sheet):
+        ys, xs = np.where(sheet > 0)
+        y0, y1 = max(0, int(ys.min()) - 12), min(vis.shape[0], int(ys.max()) + 12)
+        x0, x1 = max(0, int(xs.min()) - 12), min(vis.shape[1], int(xs.max()) + 12)
+        if y1 > y0 + 40 and x1 > x0 + 40:
+            vis = vis[y0:y1, x0:x1]
     return vis
 
 
@@ -168,6 +169,23 @@ def measure_paper_ml(
             prev = draw_preview(rgb, paper, foot, corners)
             cv2.imwrite(str(out_dir / 'preview.jpg'), cv2.cvtColor(prev, cv2.COLOR_RGB2BGR))
         raise
+
+    # Reject clearly truncated masks only (very short span on the A4 plane)
+    ys, xs = np.where(foot_w > 0)
+    if len(ys) > 0:
+        span = float(ys.max() - ys.min() + 1) / max(foot_w.shape[0], 1)
+        if span < 0.35 and length_mm < 200:
+            if out_dir is not None:
+                prev = draw_preview(rgb, paper, foot, corners)
+                cv2.imwrite(
+                    str(out_dir / 'preview.jpg'),
+                    cv2.cvtColor(prev, cv2.COLOR_RGB2BGR),
+                )
+            raise MeasureError(
+                'PARTIAL_FOOT',
+                'Only part of the foot was detected (see orange overlay). '
+                'Retake top-down with the full heel and toes on a light A4 sheet.',
+            )
 
     cm = assert_plausible_foot_cm(length_mm / 10.0)
     preview_path = None

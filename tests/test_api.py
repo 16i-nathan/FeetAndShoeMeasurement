@@ -1,4 +1,4 @@
-"""API tests for production paper-only surface."""
+"""API tests for production paper + depth surface."""
 
 from __future__ import annotations
 
@@ -51,6 +51,19 @@ def test_rejects_card_mode(client):
     assert r.status_code == 400
 
 
+def test_accepts_depth_mode_validate(client):
+    rgb, _ = make_sample(512)
+    r = client.post(
+        '/api/validate',
+        data={'mode': 'depth'},
+        files={'frame': ('f.jpg', _jpeg_bytes(rgb), 'image/jpeg')},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert 'ready' in body
+    assert 'checks' in body
+
+
 def test_validate_paper(client):
     rgb, _ = make_sample(512)
     r = client.post(
@@ -71,7 +84,6 @@ def test_job_paper_burst(client):
     r = client.post('/api/jobs', data={'mode': 'paper'}, files=files)
     assert r.status_code == 200
     job_id = r.json()['job_id']
-    # Poll
     import time
     for _ in range(40):
         j = client.get(f'/api/jobs/{job_id}').json()
@@ -81,6 +93,5 @@ def test_job_paper_burst(client):
     assert j['status'] in ('done', 'error')
     if j['status'] == 'done':
         assert 'cm' in j['result']
-        # Rounded to 0.5
         cm = j['result']['cm']
         assert abs(cm * 2 - round(cm * 2)) < 1e-6

@@ -91,33 +91,38 @@ def _preprocess(rgb: np.ndarray, size: int, mean, std) -> np.ndarray:
 
 def bootstrap_segment(rgb: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """
-    Classical bootstrap masks used when ONNX is unavailable (dev only)
-    or as synthetic-label generator. Not a silent production fallback for
-    low-confidence ML — production requires ONNX + quality gates.
+    Classical masks: light-colored rectangular sheet + contrasting foot on it.
+    Handles white and light blue/cream paper (common A4 printouts).
     """
     h, w = rgb.shape[:2]
     hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
-    # White / near-white paper
+    # Light paper: high value, low-to-moderate saturation (white / pale blue)
     paper = (
-        (hsv[:, :, 2] > 160)
-        & (hsv[:, :, 1] < 80)
+        (hsv[:, :, 2] > 140)
+        & (hsv[:, :, 1] < 110)
     ).astype(np.uint8) * 255
     ker = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
     paper = cv2.morphologyEx(paper, cv2.MORPH_CLOSE, ker, iterations=2)
     paper = cv2.morphologyEx(paper, cv2.MORPH_OPEN, ker, iterations=1)
+    # Keep largest bright blob as sheet
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(
+        (paper > 0).astype(np.uint8), connectivity=8
+    )
+    if n > 1:
+        idx = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+        paper = (labels == idx).astype(np.uint8) * 255
 
-    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
     paper_px = rgb[paper > 0]
     if len(paper_px) > 50:
         mean = paper_px.mean(axis=0).astype(np.float32)
     else:
-        mean = np.array([240, 240, 240], dtype=np.float32)
+        mean = np.array([220, 220, 230], dtype=np.float32)
     diff = np.linalg.norm(rgb.astype(np.float32) - mean, axis=2)
     paper_dil = cv2.dilate(paper, ker, iterations=3)
-    # Non-paper-colored pixels inside the sheet region
-    foot = ((diff > 28) & (paper_dil > 0)).astype(np.uint8) * 255
+    foot = ((diff > 24) & (paper_dil > 0)).astype(np.uint8) * 255
+    # Suppress residual paper speckles
     foot = cv2.morphologyEx(foot, cv2.MORPH_OPEN, ker, iterations=1)
-    foot = cv2.morphologyEx(foot, cv2.MORPH_CLOSE, ker, iterations=2)
+    foot = cv2.morphologyEx(foot, cv2.MORPH_CLOSE, ker, iterations=3)
 
     n, labels, stats, _ = cv2.connectedComponentsWithStats(
         (foot > 0).astype(np.uint8), connectivity=8
@@ -132,9 +137,41 @@ def bootstrap_segment(rgb: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return paper, foot
 
 
+def _mask_area(mask: np.ndarray) -> int:
+    return int(np.sum(mask > 0))
+
+
+def _fuse_masks(
+    paper_a: np.ndarray,
+    foot_a: np.ndarray,
+    paper_b: np.ndarray,
+    foot_b: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, str]:
+    """Prefer larger coherent foot; OR papers for sheet coverage."""
+    paper = cv2.bitwise_or(paper_a, paper_b)
+    # Prefer the foot mask with more area if both exist; else union then largest
+    a, b = _mask_area(foot_a), _mask_area(foot_b)
+    if a >= b * 1.15:
+        foot, src = foot_a, 'onnx'
+    elif b >= a * 1.15:
+        foot, src = foot_b, 'bootstrap'
+    else:
+        foot = cv2.bitwise_or(foot_a, foot_b)
+        src = 'fused'
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(
+        (foot > 0).astype(np.uint8), connectivity=8
+    )
+    if n > 1:
+        idx = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+        foot = (labels == idx).astype(np.uint8) * 255
+    return paper, foot, src
+
+
 def segment(rgb: np.ndarray, allow_bootstrap: bool | None = None) -> tuple[np.ndarray, np.ndarray, str]:
     """
-    Returns (paper_mask, foot_mask, source) where source is 'onnx' or 'bootstrap'.
+    Returns (paper_mask, foot_mask, source).
+    When ONNX is loaded, fuse with bootstrap so sparse synthetic-trained
+    foot masks do not silently under-measure real feet.
     """
     if allow_bootstrap is None:
         allow_bootstrap = os.environ.get('ALLOW_BOOTSTRAP_SEG', '1') == '1'
@@ -145,27 +182,33 @@ def segment(rgb: np.ndarray, allow_bootstrap: bool | None = None) -> tuple[np.nd
     std = card.get('std', [0.229, 0.224, 0.225])
     sess = ensure_session()
 
+    boot_paper = boot_foot = None
+    if allow_bootstrap:
+        boot_paper, boot_foot = bootstrap_segment(rgb)
+
     if sess is not None:
         h, w = rgb.shape[:2]
         inp = _preprocess(rgb, size, mean, std)
         input_name = sess.get_inputs()[0].name
         out = sess.run(None, {input_name: inp})[0]
-        # out: (1, C, H, W) or (1, H, W)
         if out.ndim == 4:
-            if out.shape[1] == 3:
-                pred = np.argmax(out[0], axis=0).astype(np.uint8)
-            else:
-                pred = np.argmax(out[0], axis=0).astype(np.uint8)
+            pred = np.argmax(out[0], axis=0).astype(np.uint8)
         else:
             pred = out[0].astype(np.uint8)
         pred = cv2.resize(pred, (w, h), interpolation=cv2.INTER_NEAREST)
         paper = (pred == CLS_PAPER).astype(np.uint8) * 255
         foot = (pred == CLS_FOOT).astype(np.uint8) * 255
+        if boot_paper is not None and boot_foot is not None:
+            # If ONNX foot is tiny vs bootstrap, trust bootstrap (common on real photos)
+            if _mask_area(foot) < 0.55 * max(_mask_area(boot_foot), 1):
+                paper, foot, src = _fuse_masks(paper, foot, boot_paper, boot_foot)
+                return paper, foot, src
+            paper, foot, src = _fuse_masks(paper, foot, boot_paper, boot_foot)
+            return paper, foot, src
         return paper, foot, 'onnx'
 
-    if allow_bootstrap:
-        paper, foot = bootstrap_segment(rgb)
-        return paper, foot, 'bootstrap'
+    if boot_paper is not None:
+        return boot_paper, boot_foot, 'bootstrap'
 
     raise RuntimeError(
         'Segmentation model not loaded. Place models/paper_foot_seg.onnx '

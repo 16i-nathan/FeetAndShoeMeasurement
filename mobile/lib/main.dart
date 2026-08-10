@@ -2,13 +2,15 @@ import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import 'screens/capture_screen.dart';
+import 'screens/method_screen.dart';
+import 'theme/app_theme.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
   ]);
+  SystemChrome.setSystemUIOverlayStyle(SystemUiOverlayStyle.dark);
 
   List<CameraDescription> cameras = const [];
   try {
@@ -28,18 +30,10 @@ class FootMeasureApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Foot Measure Lab',
+      title: 'Foot Measure',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        brightness: Brightness.dark,
-        useMaterial3: true,
-        colorScheme: const ColorScheme.dark(
-          primary: Color(0xFFF0C27A),
-          surface: Color(0xFF1A1410),
-        ),
-        fontFamily: 'Roboto',
-      ),
-      home: CaptureScreen(cameras: cameras),
+      theme: buildLightTheme(),
+      home: MethodScreen(cameras: cameras),
     );
   }
 }

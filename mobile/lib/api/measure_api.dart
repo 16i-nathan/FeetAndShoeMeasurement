@@ -11,19 +11,26 @@ class ValidateResult {
     required this.message,
     required this.hints,
     required this.score,
+    required this.checks,
+    required this.errors,
   });
 
   final bool ready;
   final String message;
   final List<String> hints;
   final double score;
+  final Map<String, bool> checks;
+  final List<String> errors;
 
   factory ValidateResult.fromJson(Map<String, dynamic> j) {
+    final rawChecks = (j['checks'] as Map?) ?? const {};
     return ValidateResult(
       ready: j['ready'] == true,
       message: (j['message'] ?? '') as String,
       hints: ((j['hints'] as List?) ?? const []).map((e) => '$e').toList(),
       score: (j['score'] is num) ? (j['score'] as num).toDouble() : 0,
+      checks: rawChecks.map((k, v) => MapEntry('$k', v == true)),
+      errors: ((j['errors'] as List?) ?? const []).map((e) => '$e').toList(),
     );
   }
 }

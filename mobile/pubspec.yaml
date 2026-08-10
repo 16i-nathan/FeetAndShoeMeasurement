@@ -36,7 +36,7 @@ dependencies:
   cupertino_icons: ^1.0.8
   camera: ^0.12.0+2
   http: ^1.6.0
-  permission_handler: ^13.0.0
+  permission_handler: 11.4.0
   path_provider: ^2.1.6
 
 dev_dependencies:

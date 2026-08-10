@@ -48,18 +48,38 @@ flutter run -d <deviceId> --dart-define=API_BASE_URL=http://YOUR_LAN_IP:8000
 # In app: Mode → Depth / LiDAR → Capture
 ```
 
-## Deploy API (always-on)
+## Deploy API + build APK
 
-Repo includes `Dockerfile` + `render.yaml`.
+### A) Host the backend (Render)
 
-1. Deploy this repo as a **Docker web service** on [Render](https://dashboard.render.com) (Blueprint or Web Service)
-2. Point the Flutter app at the HTTPS URL:
+1. Open [https://dashboard.render.com](https://dashboard.render.com) → sign in with GitHub  
+2. **New** → **Blueprint** → select `16i-nathan/FeetAndShoeMeasurement`  
+3. Apply `render.yaml` (service name `foot-measure-lab`)  
+4. Wait until status is **Live**  
+5. Copy the URL, e.g. `https://foot-measure-lab.onrender.com`  
+6. Check: open `https://YOUR-URL.onrender.com/api/health` → should show `{"ok":true,...}`
+
+Free tier sleeps after idle; first request can take ~30–60s.
+
+### B) Build the Android APK
 
 ```bash
-flutter run --dart-define=API_BASE_URL=https://YOUR-SERVICE.onrender.com
+# from repo root — use YOUR real Render URL
+./scripts/build_apk.sh https://foot-measure-lab.onrender.com
 ```
 
-Health check: `GET /api/health`
+APK path:
+
+`mobile/build/app/outputs/flutter-apk/app-release.apk`
+
+Install on a phone (USB or file share). The app talks to that API URL.
+
+Manual equivalent:
+
+```bash
+cd mobile
+flutter build apk --release --dart-define=API_BASE_URL=https://YOUR-URL.onrender.com
+```
 
 ## CLI (optional)
 

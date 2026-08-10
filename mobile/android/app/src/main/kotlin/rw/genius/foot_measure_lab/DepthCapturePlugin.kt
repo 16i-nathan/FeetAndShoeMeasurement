@@ -2,14 +2,17 @@ package rw.genius.foot_measure_lab
 
 import android.app.Activity
 import android.graphics.ImageFormat
+import android.graphics.Point
 import android.graphics.Rect
 import android.graphics.YuvImage
 import android.media.Image
 import android.os.Handler
 import android.os.Looper
+import android.view.Display
 import com.google.ar.core.ArCoreApk
 import com.google.ar.core.Config
 import com.google.ar.core.Session
+import com.google.ar.core.exceptions.CameraNotAvailableException
 import com.google.ar.core.exceptions.UnavailableException
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
@@ -58,80 +61,159 @@ class DepthCaptureHandler(
             return
         }
         Thread {
-            try {
-                val install = ArCoreApk.getInstance().requestInstall(activity, true)
-                if (install != ArCoreApk.InstallStatus.INSTALLED) {
-                    fail(result, "arcore", "Install / update Google Play Services for AR, then retry.")
-                    return@Thread
-                }
-                val session = Session(activity)
-                if (!session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) {
-                    session.close()
-                    fail(result, "no_depth", "This Android device does not support ARCore depth.")
-                    return@Thread
-                }
-                val config = Config(session)
-                config.depthMode = Config.DepthMode.AUTOMATIC
-                config.updateMode = Config.UpdateMode.LATEST_CAMERA_IMAGE
-                session.configure(config)
-                session.resume()
-                this.session = session
-
-                val deadline = System.currentTimeMillis() + 10_000
-                var payload: HashMap<String, Any>? = null
-                while (System.currentTimeMillis() < deadline) {
-                    val frame = session.update()
-                    val cameraImage = try {
-                        frame.acquireCameraImage()
-                    } catch (_: Exception) {
-                        null
-                    } ?: continue
-                    val depthImage = try {
-                        frame.acquireDepthImage16Bits()
-                    } catch (_: Exception) {
-                        cameraImage.close()
-                        null
-                    } ?: continue
-
-                    try {
-                        val jpeg = yuv420ToJpeg(cameraImage)
-                        val (depthFloats, w, h) = depth16ToMeters(depthImage)
-                        // Intrinsics for full RGB; server resizes depth to match RGB
-                        val intrinsics = frame.camera.imageIntrinsics
-                        val focal = intrinsics.focalLength
-                        val principal = intrinsics.principalPoint
-                        payload = hashMapOf(
-                            "jpeg" to jpeg,
-                            "depth" to depthFloats,
-                            "width" to w,
-                            "height" to h,
-                            "fx" to focal[0].toDouble(),
-                            "fy" to focal[1].toDouble(),
-                            "cx" to principal[0].toDouble(),
-                            "cy" to principal[1].toDouble(),
-                        )
-                    } finally {
-                        depthImage.close()
-                        cameraImage.close()
-                    }
-                    if (payload != null) break
-                    Thread.sleep(50)
-                }
-                closeSession()
-                if (payload == null) {
-                    fail(result, "timeout", "Timed out waiting for ARCore depth. Point at the floor and retry.")
-                } else {
+            var lastError: Exception? = null
+            // Flutter camera must be released first; retry while the HAL frees the lens.
+            repeat(4) { attempt ->
+                try {
+                    val payload = captureOnce(attempt)
                     mainHandler.post {
                         capturing.set(false)
                         result.success(payload)
                     }
+                    return@Thread
+                } catch (e: CameraNotAvailableException) {
+                    lastError = e
+                    closeSession()
+                    Thread.sleep(350L * (attempt + 1))
+                } catch (e: UnavailableException) {
+                    fail(result, "arcore", e.message ?: "ARCore unavailable")
+                    return@Thread
+                } catch (e: Exception) {
+                    lastError = e
+                    closeSession()
+                    if (attempt < 3) {
+                        Thread.sleep(250L * (attempt + 1))
+                    }
                 }
-            } catch (e: UnavailableException) {
-                fail(result, "arcore", e.message ?: "ARCore unavailable")
-            } catch (e: Exception) {
-                fail(result, "error", e.message ?: "Depth capture failed")
             }
+            val msg = lastError?.message ?: "Depth capture failed"
+            val code = when (lastError) {
+                is CameraNotAvailableException -> "camera_busy"
+                else -> "error"
+            }
+            val hint = if (code == "camera_busy") {
+                "Camera still in use. Close other camera apps, wait a second, then retry."
+            } else {
+                msg
+            }
+            fail(result, code, hint)
         }.start()
+    }
+
+    private fun captureOnce(attempt: Int): HashMap<String, Any> {
+        val install = ArCoreApk.getInstance().requestInstall(activity, true)
+        if (install != ArCoreApk.InstallStatus.INSTALLED) {
+            throw IllegalStateException("Install / update Google Play Services for AR, then retry.")
+        }
+
+        val session = Session(activity)
+        if (!session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) {
+            session.close()
+            throw IllegalStateException("This Android device does not support ARCore depth.")
+        }
+
+        val config = Config(session)
+        config.depthMode = Config.DepthMode.AUTOMATIC
+        config.updateMode = Config.UpdateMode.LATEST_CAMERA_IMAGE
+        config.focusMode = Config.FocusMode.AUTO
+        session.configure(config)
+        applyDisplayGeometry(session)
+        session.resume()
+        this.session = session
+
+        // Let ARCore warm up; depth often arrives a few frames after resume.
+        val warmupMs = 400L + attempt * 200L
+        Thread.sleep(warmupMs)
+
+        val deadline = System.currentTimeMillis() + 12_000
+        var payload: HashMap<String, Any>? = null
+        var frames = 0
+        while (System.currentTimeMillis() < deadline) {
+            val frame = try {
+                session.update()
+            } catch (e: CameraNotAvailableException) {
+                throw e
+            }
+            frames++
+
+            // Skip early frames — depth map is often empty right after resume.
+            if (frames < 4) {
+                Thread.sleep(40)
+                continue
+            }
+
+            val cameraImage = try {
+                frame.acquireCameraImage()
+            } catch (_: Exception) {
+                null
+            } ?: continue
+
+            val depthImage = try {
+                frame.acquireDepthImage16Bits()
+            } catch (_: Exception) {
+                cameraImage.close()
+                null
+            } ?: continue
+
+            try {
+                val jpeg = yuv420ToJpeg(cameraImage)
+                val (depthFloats, w, h) = depth16ToMeters(depthImage)
+                if (!hasUsableDepth(depthFloats)) {
+                    continue
+                }
+                val intrinsics = frame.camera.imageIntrinsics
+                val focal = intrinsics.focalLength
+                val principal = intrinsics.principalPoint
+                payload = hashMapOf(
+                    "jpeg" to jpeg,
+                    "depth" to depthFloats,
+                    "width" to w,
+                    "height" to h,
+                    "fx" to focal[0].toDouble(),
+                    "fy" to focal[1].toDouble(),
+                    "cx" to principal[0].toDouble(),
+                    "cy" to principal[1].toDouble(),
+                )
+            } finally {
+                depthImage.close()
+                cameraImage.close()
+            }
+            if (payload != null) break
+            Thread.sleep(40)
+        }
+
+        closeSession()
+        return payload
+            ?: throw IllegalStateException(
+                "Timed out waiting for ARCore depth. Point at the floor and retry."
+            )
+    }
+
+    private fun applyDisplayGeometry(session: Session) {
+        try {
+            val display: Display = activity.windowManager.defaultDisplay
+            val size = Point()
+            @Suppress("DEPRECATION")
+            display.getRealSize(size)
+            session.setDisplayGeometry(display.rotation, size.x, size.y)
+        } catch (_: Exception) {
+            // Non-fatal — some devices still return depth without this.
+        }
+    }
+
+    /** Reject empty / all-zero depth maps that look "captured" but are useless. */
+    private fun hasUsableDepth(bytes: ByteArray): Boolean {
+        val buf = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer()
+        var valid = 0
+        val n = buf.remaining()
+        val step = maxOf(1, n / 2000)
+        var i = 0
+        while (i < n) {
+            val z = buf.get(i)
+            if (z.isFinite() && z > 0.05f && z < 5f) valid++
+            i += step
+        }
+        return valid >= 40
     }
 
     private fun fail(result: MethodChannel.Result, code: String, message: String) {

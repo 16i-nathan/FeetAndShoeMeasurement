@@ -2,6 +2,7 @@ import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 
 import '../api/measure_api.dart';
+import '../config.dart';
 import '../theme/app_theme.dart';
 import 'method_screen.dart';
 
@@ -11,14 +12,23 @@ class ResultScreen extends StatelessWidget {
     required this.result,
     required this.mode,
     required this.cameras,
+    this.previewUrl,
   });
 
   final MeasureResult result;
   final String mode;
   final List<CameraDescription> cameras;
+  final String? previewUrl;
 
   @override
   Widget build(BuildContext context) {
+    final preview = previewUrl == null
+        ? null
+        : (previewUrl!.startsWith('http')
+            ? previewUrl!
+            : '$apiBaseUrl$previewUrl');
+    final conf = result.confidence;
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Result'),
@@ -52,23 +62,42 @@ class ResultScreen extends StatelessWidget {
                   'Mode: $mode',
                   style: const TextStyle(color: AppColors.muted),
                 ),
+                if (conf != null) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    'Confidence ${(conf * 100).round()}%',
+                    style: const TextStyle(color: AppColors.muted, fontSize: 13),
+                  ),
+                ],
                 const SizedBox(height: 18),
                 Text(
-                  '${result.cm} cm',
+                  result.displayCm,
                   style: const TextStyle(
-                    fontSize: 44,
+                    fontSize: 40,
                     fontWeight: FontWeight.w900,
                     color: AppColors.ink,
                     letterSpacing: -1,
                   ),
+                  textAlign: TextAlign.center,
                 ),
                 const Text(
-                  'Foot length',
+                  'Foot length (nearest 0.5 cm)',
                   style: TextStyle(color: AppColors.muted),
                 ),
               ],
             ),
           ),
+          if (preview != null) ...[
+            const SizedBox(height: 12),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(16),
+              child: Image.network(
+                preview,
+                fit: BoxFit.cover,
+                errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+              ),
+            ),
+          ],
           const SizedBox(height: 12),
           Row(
             children: [
@@ -96,7 +125,8 @@ class ResultScreen extends StatelessWidget {
               borderRadius: BorderRadius.circular(12),
             ),
             child: const Text(
-              'Sizes are approximate conversions for testing — not brand fitting advice.',
+              'Sizes are approximate conversions — not brand fitting advice. '
+              'Re-measure if the ± range is large or confidence is low.',
               style: TextStyle(color: AppColors.ink, fontSize: 13, height: 1.35),
             ),
           ),

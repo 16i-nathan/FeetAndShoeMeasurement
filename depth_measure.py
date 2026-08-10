@@ -151,8 +151,89 @@ def height_above_plane(points, normal, d):
     return -(points @ normal + d)
 
 
+def assert_plausible_foot_cm(cm, min_cm=12.0, max_cm=35.0):
+    """
+    Reject garbage lengths from mis-detected blobs (cables, shoes piles, etc.).
+    Adult feet are typically ~22–30 cm; allow kids down to ~12 cm.
+    """
+    if not np.isfinite(cm) or cm < min_cm or cm > max_cm:
+        raise ValueError(
+            f"Measured {cm:.1f} cm is outside a plausible foot range "
+            f"({min_cm:.0f}–{max_cm:.0f} cm). Retake top-down with one full foot "
+            "centered on a clear floor (no cables or other objects)."
+        )
+    return cm
+
+
+def _contour_foot_score(contour, img_shape):
+    """Prefer elongated, reasonably sized blobs near the image center."""
+    h, w = img_shape[:2]
+    area = float(cv2.contourArea(contour))
+    img_area = float(h * w)
+    if area < 0.003 * img_area or area > 0.40 * img_area:
+        return -1.0
+    x, y, bw, bh = cv2.boundingRect(contour)
+    short, long = sorted((bw, bh))
+    if short < 1:
+        return -1.0
+    aspect = long / short
+    # Feet are elongated; reject near-square cable balls / clutter.
+    if aspect < 1.35 or aspect > 6.5:
+        return -1.0
+    cx = x + bw * 0.5
+    cy = y + bh * 0.5
+    dist = np.hypot(cx - w * 0.5, cy - h * 0.5) / (0.5 * np.hypot(w, h))
+    center = max(0.0, 1.0 - dist)
+    # Penalize blobs glued to the border (often clutter / partial crop).
+    margin = 4
+    border_hit = (
+        x <= margin or y <= margin or x + bw >= w - margin or y + bh >= h - margin
+    )
+    border_pen = 0.55 if border_hit else 1.0
+    return area * aspect * (0.35 + 0.65 * center) * border_pen
+
+
+def _refine_mask_with_rgb(foot_mask, rgb, depth_m):
+    """
+    When RGB is available, prefer pixels that differ from the border floor color.
+    Keeps depth-raised region but drops floor-colored noise inside the blob.
+    """
+    if rgb is None or rgb.ndim != 3:
+        return foot_mask
+    h, w = foot_mask.shape
+    if rgb.shape[0] != h or rgb.shape[1] != w:
+        rgb = cv2.resize(rgb, (w, h), interpolation=cv2.INTER_AREA)
+
+    # Sample floor color from border pixels that are valid depth and not foot.
+    border = np.zeros((h, w), dtype=bool)
+    m = max(6, min(h, w) // 25)
+    border[:m, :] = True
+    border[-m:, :] = True
+    border[:, :m] = True
+    border[:, -m:] = True
+    valid = np.isfinite(depth_m) & (depth_m > 0.05) & (depth_m < 5.0)
+    floor_pix = border & valid & (foot_mask == 0)
+    if floor_pix.sum() < 80:
+        return foot_mask
+
+    floor_rgb = rgb[floor_pix].astype(np.float32)
+    mean = floor_rgb.mean(axis=0)
+    # Distance from floor color in RGB
+    diff = np.linalg.norm(rgb.astype(np.float32) - mean, axis=2)
+    # Keep raised pixels that look unlike the floor (skin/sock/shoe).
+    unlike = diff > max(18.0, float(np.percentile(diff[floor_pix], 70)))
+    refined = np.zeros_like(foot_mask)
+    refined[(foot_mask > 0) & unlike] = 255
+    if (refined > 0).sum() < 0.35 * max((foot_mask > 0).sum(), 1):
+        return foot_mask  # RGB cue too aggressive — keep depth-only mask
+    ker = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    refined = cv2.morphologyEx(refined, cv2.MORPH_CLOSE, ker, iterations=2)
+    return refined
+
+
 def segment_foot_from_depth(depth_m, fx, fy, cx, cy,
-                            min_height_m=0.008, max_height_m=0.12):
+                            min_height_m=0.008, max_height_m=0.14,
+                            rgb=None):
     """
     Foot = blob raised above the dominant ground plane.
     Returns foot_mask (H,W) uint8 and foot 3D points.
@@ -192,23 +273,30 @@ def segment_foot_from_depth(depth_m, fx, fy, cx, cy,
     ker = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
     foot_mask = cv2.morphologyEx(foot_mask, cv2.MORPH_CLOSE, ker, iterations=2)
     foot_mask = cv2.morphologyEx(foot_mask, cv2.MORPH_OPEN, ker, iterations=1)
+    foot_mask = _refine_mask_with_rgb(foot_mask, rgb, depth_m)
 
-    # Keep largest component
+    # Rank components — do not blindly take largest (cables / clutter win that).
     cnts, _ = cv2.findContours(foot_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not cnts:
+    scored = []
+    for c in cnts:
+        s = _contour_foot_score(c, foot_mask.shape)
+        if s > 0:
+            scored.append((s, c))
+    if not scored:
         raise ValueError(
-            "No raised foot found in depth. Capture top-down with LiDAR/ToF, "
-            "foot fully in frame, depth in meters."
+            "No clear foot found in depth. Capture top-down with one full foot "
+            "centered on a clear floor (LiDAR/ToF, depth in meters)."
         )
-    largest = max(cnts, key=cv2.contourArea)
+    scored.sort(key=lambda t: t[0], reverse=True)
+    best = scored[0][1]
     clean = np.zeros_like(foot_mask)
-    cv2.drawContours(clean, [largest], -1, 255, thickness=-1)
+    cv2.drawContours(clean, [best], -1, 255, thickness=-1)
 
     foot_pts, _ = backproject(depth_m, fx, fy, cx, cy, valid_mask=(clean > 0) & valid)
     if len(foot_pts) < 30:
         raise ValueError("Foot depth region too small / sparse.")
 
-    return clean, foot_pts, largest, (normal, d)
+    return clean, foot_pts, best, (normal, d)
 
 
 def rays_to_plane(us, vs, fx, fy, cx, cy, normal, d):
@@ -233,7 +321,7 @@ def foot_length_m_from_points(pts, normal=None):
         nrm = np.linalg.norm(axis)
         axis = vh[0] if nrm < 1e-9 else axis / nrm
     proj = centered @ axis
-    lo, hi = np.percentile(proj, [1, 99])
+    lo, hi = np.percentile(proj, [2, 98])
     return float(hi - lo)
 
 
@@ -279,14 +367,23 @@ def measure_foot_cm_from_depth(rgb, depth_m, fx=None, fy=None, cx=None, cy=None,
         cy = h / 2.0 if cy is None else cy
 
     foot_mask, foot_pts, contour, plane = segment_foot_from_depth(
-        depth_m, fx, fy, cx, cy
+        depth_m, fx, fy, cx, cy, rgb=rgb
     )
     normal, d = plane
-    # Size pixels at foot depth in the synthetic generator → use 3D foot points PCA
-    # as primary; ray-plane footprint as the on-floor length (preferred).
     length_m = foot_length_m_on_plane(foot_mask, fx, fy, cx, cy, normal, d)
+    # Cross-check with 3D PCA on raised points; reject if they disagree a lot
+    # (usually means the mask mixed foot + clutter).
+    length_pts = foot_length_m_from_points(foot_pts, normal=normal)
+    if length_pts > 0.05:
+        ratio = max(length_m, length_pts) / max(min(length_m, length_pts), 1e-6)
+        if ratio > 1.35:
+            # Prefer the shorter of the two when both are in range — clutter
+            # inflates length more often than it shrinks it.
+            length_m = min(length_m, length_pts)
+
+    cm = assert_plausible_foot_cm(length_m * 100.0)
     box = cv2.boundingRect(contour)
-    return length_m * 100.0, box, foot_mask, foot_pts
+    return cm, box, foot_mask, foot_pts
 
 
 def make_synthetic_rgbd(out_rgb='data/synthetic_depth_rgb.jpg',

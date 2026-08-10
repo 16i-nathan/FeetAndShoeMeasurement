@@ -298,12 +298,38 @@ def _foot_edge_maps(rgb_img, card_box):
     e[gray > 210] = 0  # drop flash glare / card shine
     maps.append(_mask_card_region(e, card_box))
 
+    # 3) Foreground vs border-floor color (helps cluttered floors)
+    maps.append(_mask_card_region(_foot_fg_edges(rgb_img), card_box))
+
     return maps
+
+
+def _foot_fg_edges(rgb_img):
+    """Edges of pixels unlike the border floor color (skin / sock / shoe)."""
+    border = np.concatenate([
+        rgb_img[:10, :].reshape(-1, 3),
+        rgb_img[-10:, :].reshape(-1, 3),
+        rgb_img[:, :10].reshape(-1, 3),
+        rgb_img[:, -10:].reshape(-1, 3),
+    ], axis=0).astype(np.float32)
+    mean = border.mean(axis=0)
+    diff = np.linalg.norm(rgb_img.astype(np.float32) - mean, axis=2)
+    thr = max(22.0, float(np.percentile(
+        np.concatenate([diff[:10, :].ravel(), diff[-10:, :].ravel()]), 75
+    )))
+    mask = (diff > thr).astype(np.uint8) * 255
+    gray = cv2.cvtColor(rgb_img, cv2.COLOR_RGB2GRAY)
+    mask[gray > 220] = 0
+    ker = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, ker, iterations=1)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, ker, iterations=2)
+    return cv2.Canny(mask, 50, 150)
 
 
 def _score_foot_candidates(edge_maps, card_box, card_rect, img_shape):
     """Rank elongated blobs whose long side is ~2–4× the credit card."""
-    img_area = img_shape[0] * img_shape[1]
+    img_h, img_w = img_shape[:2]
+    img_area = img_h * img_w
     (_, _), (cw, ch), _ = card_rect
     card_long = max(cw, ch)
     ranked = []
@@ -327,7 +353,14 @@ def _score_foot_candidates(edge_maps, card_box, card_rect, img_shape):
             if ratio < 1.8 or ratio > 4.5:
                 continue
             length_score = float(np.exp(-0.5 * ((ratio - 3.0) / 0.9) ** 2))
-            score = length_score * aspect * np.sqrt(area)
+            cx = x + w * 0.5
+            cy = y + h * 0.5
+            dist = np.hypot(cx - img_w * 0.5, cy - img_h * 0.5)
+            center = max(0.0, 1.0 - dist / (0.5 * np.hypot(img_w, img_h)))
+            margin = 4
+            if x <= margin or y <= margin or x + w >= img_w - margin or y + h >= img_h - margin:
+                center *= 0.6
+            score = length_score * aspect * np.sqrt(area) * (0.4 + 0.6 * center)
             ranked.append((score, box, c))
 
     ranked.sort(key=lambda t: t[0], reverse=True)
@@ -348,7 +381,18 @@ def find_foot_bbox(rgb_img, card_box, card_rect):
             "Could not find a foot contour. Use a top-down photo with the full foot "
             "visible, card beside it, and enough contrast against the floor."
         )
-    _, box, contour = ranked[0]
+    best = ranked[0]
+    if len(ranked) > 1 and ranked[1][0] > 0.85 * ranked[0][0]:
+        img_h, img_w = rgb_img.shape[:2]
+
+        def _center_dist(item):
+            x, y, w, h = item[1]
+            return np.hypot(x + w * 0.5 - img_w * 0.5, y + h * 0.5 - img_h * 0.5)
+
+        if _center_dist(ranked[1]) < _center_dist(ranked[0]):
+            best = ranked[1]
+
+    _, box, contour = best
     return box, contour
 
 

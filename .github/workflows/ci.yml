@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install deps
+        run: |
+          pip install -r requirements.txt
+      - name: Unit + API tests
+        env:
+          ALLOW_BOOTSTRAP_SEG: '1'
+          LAB_MODES: '0'
+          RATE_LIMIT_PER_MIN: '0'
+        run: pytest -q tests/
+      - name: Model smoke (optional ONNX)
+        run: |
+          python -c "from seg_infer import model_loaded, load_model_card; print(load_model_card()); print('loaded', model_loaded())"
+      - name: Eval gate (bootstrap)
+        env:
+          ALLOW_BOOTSTRAP_SEG: '1'
+        run: python -m training.eval_gate --n 30 --max-mae-mm 15 --max-fail-rate 0.25

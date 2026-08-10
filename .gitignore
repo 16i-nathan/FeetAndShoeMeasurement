@@ -5,8 +5,9 @@ __pycache__/
 .mypy_cache/
 .streamlit/secrets.toml
 
-# Local outputs and personal captures (do not publish)
-output/
+training/data/
+*.sqlite3
+
 data/nathan*
 data/*.Zone.Identifier
 *.heic

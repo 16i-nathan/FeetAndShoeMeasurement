@@ -42,6 +42,9 @@ class MeasureResult {
     required this.usMen,
     required this.usWomen,
     required this.uk,
+    this.cmRaw,
+    this.cmSpread,
+    this.confidence,
   });
 
   final double cm;
@@ -49,6 +52,9 @@ class MeasureResult {
   final dynamic usMen;
   final dynamic usWomen;
   final dynamic uk;
+  final double? cmRaw;
+  final double? cmSpread;
+  final double? confidence;
 
   factory MeasureResult.fromJson(Map<String, dynamic> j) {
     return MeasureResult(
@@ -57,7 +63,20 @@ class MeasureResult {
       usMen: j['us_men'],
       usWomen: j['us_women'],
       uk: j['uk'],
+      cmRaw: j['cm_raw'] is num ? (j['cm_raw'] as num).toDouble() : null,
+      cmSpread:
+          j['cm_spread'] is num ? (j['cm_spread'] as num).toDouble() : null,
+      confidence:
+          j['confidence'] is num ? (j['confidence'] as num).toDouble() : null,
     );
+  }
+
+  String get displayCm {
+    final spread = cmSpread;
+    if (spread != null && spread >= 0.15) {
+      return '${cm.toStringAsFixed(1)} ± ${spread.toStringAsFixed(1)} cm';
+    }
+    return '${cm.toStringAsFixed(1)} cm';
   }
 }
 
@@ -126,15 +145,47 @@ class MeasureApi {
     double? cx,
     double? cy,
   }) async {
+    return createBurstJob(
+      [jpeg],
+      mode,
+      depthNpy: depthNpy,
+      fx: fx,
+      fy: fy,
+      cx: cx,
+      cy: cy,
+    );
+  }
+
+  Future<String> createBurstJob(
+    List<Uint8List> jpegs,
+    String mode, {
+    Uint8List? depthNpy,
+    double? fx,
+    double? fy,
+    double? cx,
+    double? cy,
+  }) async {
     final req = http.MultipartRequest('POST', _u('/api/jobs'));
     req.fields['mode'] = mode;
     if (fx != null) req.fields['fx'] = '$fx';
     if (fy != null) req.fields['fy'] = '$fy';
     if (cx != null) req.fields['cx'] = '$cx';
     if (cy != null) req.fields['cy'] = '$cy';
-    req.files.add(
-      http.MultipartFile.fromBytes('image', jpeg, filename: 'capture.jpg'),
-    );
+    if (jpegs.length == 1) {
+      req.files.add(
+        http.MultipartFile.fromBytes('image', jpegs.first, filename: 'capture.jpg'),
+      );
+    } else {
+      for (var i = 0; i < jpegs.length; i++) {
+        req.files.add(
+          http.MultipartFile.fromBytes(
+            'images',
+            jpegs[i],
+            filename: 'capture_$i.jpg',
+          ),
+        );
+      }
+    }
     if (depthNpy != null) {
       req.files.add(
         http.MultipartFile.fromBytes(
@@ -144,7 +195,7 @@ class MeasureApi {
         ),
       );
     }
-    final streamed = await req.send().timeout(const Duration(seconds: 60));
+    final streamed = await req.send().timeout(const Duration(seconds: 90));
     final body = await streamed.stream.bytesToString();
     if (streamed.statusCode >= 400) {
       throw Exception('Job create failed (${streamed.statusCode}): $body');
@@ -168,7 +219,7 @@ class MeasureApi {
 
   Future<JobStatus> waitForJob(
     String jobId, {
-    Duration timeout = const Duration(seconds: 90),
+    Duration timeout = const Duration(seconds: 120),
   }) async {
     final end = DateTime.now().add(timeout);
     while (DateTime.now().isBefore(end)) {

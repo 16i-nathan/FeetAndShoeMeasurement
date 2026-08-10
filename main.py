@@ -1,5 +1,6 @@
 import argparse
 import os
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -10,6 +11,7 @@ from depth_measure import (
     load_depth,
     measure_foot_cm_from_depth,
     resolve_depth_path,
+    assert_plausible_foot_cm,
 )
 from utils import (
     calcFeetSize,
@@ -53,7 +55,15 @@ def ensure_output_dir():
 
 
 def measure_with_paper(oimg):
-    """Original A4-paper reference pipeline. Returns feet size in cm."""
+    """A4-paper reference pipeline (production ML + homography). Returns cm."""
+    from ml_measure import measure_paper_ml
+
+    result = measure_paper_ml(oimg, out_dir=Path('output'))
+    return float(result['cm'])
+
+
+def measure_with_paper_classical(oimg):
+    """Legacy classical CV pipeline (lab/debug only)."""
     preprocessedOimg = preprocess(oimg)
     cv2.imwrite('output/preprocessedOimg.jpg', preprocessedOimg)
 
@@ -84,7 +94,8 @@ def measure_with_paper(oimg):
     fdraw = drawCnt(fboundRect[2], fcnt, fcntpoly, fimg)
     cv2.imwrite('output/fdraw.jpg', fdraw)
 
-    return calcFeetSize(pcropedImg, fboundRect) / 10.0
+    cm = calcFeetSize(pcropedImg, fboundRect) / 10.0
+    return assert_plausible_foot_cm(cm)
 
 
 def measure_with_card(oimg, search_img=None):
@@ -117,7 +128,8 @@ def measure_with_card(oimg, search_img=None):
     cv2.drawContours(vis, [foot_contour], -1, (0, 180, 255), 2)
     cv2.imwrite('output/card_detect.jpg', cv2.cvtColor(vis, cv2.COLOR_RGB2BGR))
 
-    return calc_feet_size_from_card(foot_box, card_rect, foot_contour) / 10.0
+    cm = calc_feet_size_from_card(foot_box, card_rect, foot_contour) / 10.0
+    return assert_plausible_foot_cm(cm)
 
 
 def measure_with_both(oimg):

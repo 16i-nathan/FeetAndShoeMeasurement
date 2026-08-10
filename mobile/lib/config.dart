@@ -9,3 +9,9 @@ const String apiBaseUrl = String.fromEnvironment(
   'API_BASE_URL',
   defaultValue: 'http://10.0.2.2:8000',
 );
+
+/// When true, show card / both / depth lab modes. Production default is A4 only.
+const bool labModes = bool.fromEnvironment(
+  'LAB_MODES',
+  defaultValue: false,
+);

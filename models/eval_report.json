@@ -1,0 +1,9 @@
+{
+  "n": 20,
+  "n_measured": 20,
+  "mae_mm": 11.819,
+  "fail_rate": 0.0,
+  "max_mae_mm": 15.0,
+  "max_fail_rate": 0.25,
+  "pass": true
+}

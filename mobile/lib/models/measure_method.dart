@@ -22,11 +22,38 @@ class MeasureMethod {
   final bool needsDepthHardware;
 }
 
-const methods = <MeasureMethod>[
+const paperMethod = MeasureMethod(
+  id: 'paper',
+  title: 'A4 paper',
+  subtitle: 'Foot on a full blank A4 sheet — production mode',
+  icon: 'description',
+  guideAsset: 'assets/guides/rgb_guide.png',
+  dos: [
+    'Entire A4 sheet visible (all four corners)',
+    'Foot fully on the paper (toes to heel)',
+    'Phone parallel to the floor (true top-down)',
+    'Dark non-white floor, soft even light, flash off',
+  ],
+  donts: [
+    'Paper corners cut off',
+    'Angled / perspective shot',
+    'Flash glare or hard shadows',
+    'White floor (hard to see paper)',
+  ],
+  checklist: [
+    'Top-down',
+    'Full A4 in frame',
+    'Foot on paper',
+    'No flash',
+    'Dark floor',
+  ],
+);
+
+const labMethods = <MeasureMethod>[
   MeasureMethod(
     id: 'card',
     title: 'Credit card',
-    subtitle: 'Best for most phones — card beside the foot',
+    subtitle: 'Lab only — card beside the foot',
     icon: 'credit_card',
     guideAsset: 'assets/guides/rgb_guide.png',
     dos: [
@@ -50,35 +77,9 @@ const methods = <MeasureMethod>[
     ],
   ),
   MeasureMethod(
-    id: 'paper',
-    title: 'A4 paper',
-    subtitle: 'Foot on a full blank A4 sheet',
-    icon: 'description',
-    guideAsset: 'assets/guides/rgb_guide.png',
-    dos: [
-      'Entire A4 sheet visible (all four corners)',
-      'Foot fully on the paper',
-      'Top-down, even lighting',
-      'Dark non-white floor around the paper',
-    ],
-    donts: [
-      'Paper corners cut off',
-      'Angled / perspective shot',
-      'Flash glare',
-      'White floor (hard to see paper)',
-    ],
-    checklist: [
-      'Top-down',
-      'Full A4 in frame',
-      'Foot on paper',
-      'No flash',
-      'Dark floor',
-    ],
-  ),
-  MeasureMethod(
     id: 'both',
     title: 'Paper + card',
-    subtitle: 'Highest RGB accuracy — paper ROI, card scale',
+    subtitle: 'Lab only — paper ROI, card scale',
     icon: 'layers',
     guideAsset: 'assets/guides/rgb_guide.png',
     dos: [
@@ -102,25 +103,28 @@ const methods = <MeasureMethod>[
   MeasureMethod(
     id: 'depth',
     title: 'Depth / LiDAR',
-    subtitle: 'No card needed — LiDAR/AR depth phones only',
+    subtitle: 'Lab only — LiDAR/AR depth phones',
     icon: 'view_in_ar',
     guideAsset: 'assets/guides/depth_guide.png',
     needsDepthHardware: true,
     dos: [
       'Overhead camera, parallel to floor',
       'Entire foot inside the frame',
+      'One foot only on a clear floor',
       'Soft light, flash off',
       'Matte floor (not shiny tile)',
     ],
     donts: [
       'Cropped toes or heel',
       'Side angle',
+      'Cables, shoes, or clutter beside the foot',
       'Harsh shadows / flash',
       'Shiny reflective floor (breaks LiDAR)',
     ],
     checklist: [
       'Overhead',
       'Full foot',
+      'Clear floor',
       'Soft light',
       'No flash',
       'No shiny floor',
@@ -129,5 +133,15 @@ const methods = <MeasureMethod>[
   ),
 ];
 
-MeasureMethod methodById(String id) =>
-    methods.firstWhere((m) => m.id == id, orElse: () => methods.first);
+/// Production list is A4-only unless LAB_MODES=true at build time.
+List<MeasureMethod> methodsForBuild({required bool labModes}) {
+  if (labModes) {
+    return [paperMethod, ...labMethods];
+  }
+  return [paperMethod];
+}
+
+MeasureMethod methodById(String id) {
+  final all = [paperMethod, ...labMethods];
+  return all.firstWhere((m) => m.id == id, orElse: () => paperMethod);
+}

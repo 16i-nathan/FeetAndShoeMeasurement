@@ -1,0 +1,2 @@
+# Optional deps for training/export only (not required at API runtime).
+torch>=2.1

@@ -9,6 +9,8 @@ final class DepthCapturePlugin: NSObject, FlutterPlugin, ARSessionDelegate {
   private var session: ARSession?
   private var pendingResult: FlutterResult?
   private var timeoutWork: DispatchWorkItem?
+  private var framesSeen = 0
+  private var attempt = 0
 
   init(channel: FlutterMethodChannel) {
     self.channel = channel
@@ -58,6 +60,13 @@ final class DepthCapturePlugin: NSObject, FlutterPlugin, ARSessionDelegate {
     }
 
     pendingResult = result
+    framesSeen = 0
+    attempt += 1
+    startSession()
+  }
+
+  @available(iOS 14.0, *)
+  private func startSession() {
     let session = ARSession()
     session.delegate = self
     session.delegateQueue = DispatchQueue.main
@@ -68,20 +77,62 @@ final class DepthCapturePlugin: NSObject, FlutterPlugin, ARSessionDelegate {
     if ARWorldTrackingConfiguration.supportsFrameSemantics(.smoothedSceneDepth) {
       config.frameSemantics.insert(.smoothedSceneDepth)
     }
+    // Fresh tracking after Flutter camera released the lens.
     session.run(config, options: [.resetTracking, .removeExistingAnchors])
 
+    timeoutWork?.cancel()
     let timeout = DispatchWorkItem { [weak self] in
-      self?.finishError(code: "timeout", message: "Timed out waiting for LiDAR depth. Point at the floor and retry.")
+      self?.finishError(
+        code: "timeout",
+        message: "Timed out waiting for LiDAR depth. Point at the floor and retry."
+      )
     }
     timeoutWork = timeout
-    DispatchQueue.main.asyncAfter(deadline: .now() + 8, execute: timeout)
+    DispatchQueue.main.asyncAfter(deadline: .now() + 12, execute: timeout)
+  }
+
+  func session(_ session: ARSession, didFailWithError error: Error) {
+    guard pendingResult != nil else { return }
+    let ns = error as NSError
+    // Camera busy / interrupted — common right after releasing AVCaptureSession.
+    if ns.domain == "com.apple.arkit.error" || ns.localizedDescription.lowercased().contains("camera") {
+      finishError(
+        code: "camera_busy",
+        message: "Camera still in use. Wait a second, then retry Depth capture."
+      )
+      return
+    }
+    finishError(code: "error", message: error.localizedDescription)
+  }
+
+  func sessionWasInterrupted(_ session: ARSession) {
+    // Ignore transient interruptions while waiting; timeout will fire if needed.
+  }
+
+  func sessionInterruptionEnded(_ session: ARSession) {
+    guard #available(iOS 14.0, *), pendingResult != nil else { return }
+    // Resume after interruption (e.g. returning from another app).
+    let config = ARWorldTrackingConfiguration()
+    config.frameSemantics.insert(.sceneDepth)
+    if ARWorldTrackingConfiguration.supportsFrameSemantics(.smoothedSceneDepth) {
+      config.frameSemantics.insert(.smoothedSceneDepth)
+    }
+    session.run(config, options: [])
   }
 
   func session(_ session: ARSession, didUpdate frame: ARFrame) {
     guard pendingResult != nil else { return }
+    framesSeen += 1
+    // Depth is often empty for the first few frames after run().
+    if framesSeen < 5 { return }
 
     let depthData = frame.smoothedSceneDepth ?? frame.sceneDepth
     guard let depthData = depthData else { return }
+
+    guard let depthBytes = Self.float32Depth(from: depthData.depthMap),
+          Self.hasUsableDepth(depthBytes) else {
+      return
+    }
 
     timeoutWork?.cancel()
     timeoutWork = nil
@@ -90,15 +141,10 @@ final class DepthCapturePlugin: NSObject, FlutterPlugin, ARSessionDelegate {
       finishError(code: "jpeg", message: "Failed to encode camera image")
       return
     }
-    guard let depthBytes = Self.float32Depth(from: depthData.depthMap) else {
-      finishError(code: "depth", message: "Failed to read depth map")
-      return
-    }
 
     let depthMap = depthData.depthMap
     let width = CVPixelBufferGetWidth(depthMap)
     let height = CVPixelBufferGetHeight(depthMap)
-    // Intrinsics for the full RGB camera image (server resizes depth to RGB)
     let intrinsics = frame.camera.intrinsics
 
     let payload: [String: Any] = [
@@ -132,6 +178,24 @@ final class DepthCapturePlugin: NSObject, FlutterPlugin, ARSessionDelegate {
     session?.pause()
     session = nil
     pendingResult = nil
+    framesSeen = 0
+  }
+
+  private static func hasUsableDepth(_ data: Data) -> Bool {
+    data.withUnsafeBytes { raw in
+      let floats = raw.bindMemory(to: Float32.self)
+      let n = floats.count
+      guard n > 0 else { return false }
+      let step = max(1, n / 2000)
+      var valid = 0
+      var i = 0
+      while i < n {
+        let z = floats[i]
+        if z.isFinite && z > 0.05 && z < 5 { valid += 1 }
+        i += step
+      }
+      return valid >= 40
+    }
   }
 
   private static func float32Depth(from buffer: CVPixelBuffer) -> Data? {

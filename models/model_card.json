@@ -1,0 +1,21 @@
+{
+  "version": "bootstrap-unet-v1",
+  "input_size": 256,
+  "classes": [
+    "background",
+    "paper",
+    "foot"
+  ],
+  "mean": [
+    0.485,
+    0.456,
+    0.406
+  ],
+  "std": [
+    0.229,
+    0.224,
+    0.225
+  ],
+  "release_gate_mae_mm": 5.0,
+  "notes": "Bootstrap weights from synthetic A4+foot composites."
+}

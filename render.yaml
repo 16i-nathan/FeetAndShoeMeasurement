@@ -2,9 +2,20 @@ services:
   - type: web
     name: foot-measure-lab
     runtime: docker
-    plan: free
+    # Always-on recommended for production (free tier sleeps and breaks mobile timeouts).
+    plan: starter
     dockerfilePath: ./Dockerfile
     healthCheckPath: /api/health
     envVars:
       - key: PYTHONUNBUFFERED
         value: "1"
+      - key: ALLOW_BOOTSTRAP_SEG
+        value: "1"
+      - key: LAB_MODES
+        value: "0"
+      - key: RATE_LIMIT_PER_MIN
+        value: "90"
+      - key: JOB_TTL_SECONDS
+        value: "86400"
+      - key: CORS_ORIGINS
+        value: "*"

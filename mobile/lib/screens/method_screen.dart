@@ -1,6 +1,7 @@
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 
+import '../config.dart';
 import '../models/measure_method.dart';
 import '../services/depth_capture.dart';
 import '../theme/app_theme.dart';
@@ -20,10 +21,20 @@ class _MethodScreenState extends State<MethodScreen> {
   bool _depthSupported = false;
   bool _checkingDepth = true;
 
+  List<MeasureMethod> get _methods => methodsForBuild(labModes: labModes);
+
   @override
   void initState() {
     super.initState();
+    _selected = paperMethod.id;
     _loadDepth();
+    // Production: skip picker when only A4 is available.
+    if (!labModes) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _openGuidelines(paperMethod);
+      });
+    }
   }
 
   Future<void> _loadDepth() async {
@@ -32,8 +43,19 @@ class _MethodScreenState extends State<MethodScreen> {
     setState(() {
       _depthSupported = ok;
       _checkingDepth = false;
-      _selected ??= 'card';
     });
+  }
+
+  void _openGuidelines(MeasureMethod method) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => GuidelinesScreen(
+          method: method,
+          cameras: widget.cameras,
+          depthSupported: _depthSupported,
+        ),
+      ),
+    );
   }
 
   IconData _icon(String key) {
@@ -53,6 +75,12 @@ class _MethodScreenState extends State<MethodScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (!labModes) {
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
+
     return Scaffold(
       body: SafeArea(
         child: ListView(
@@ -68,11 +96,11 @@ class _MethodScreenState extends State<MethodScreen> {
             ),
             const SizedBox(height: 6),
             const Text(
-              'Choose how you want to measure. We’ll show photo rules before the camera opens.',
+              'Lab modes enabled. Production builds use A4 paper only.',
               style: TextStyle(color: AppColors.muted, height: 1.4),
             ),
             const SizedBox(height: 20),
-            ...methods.map((m) {
+            ..._methods.map((m) {
               final selected = _selected == m.id;
               final disabled =
                   m.needsDepthHardware && !_depthSupported && !_checkingDepth;
@@ -167,18 +195,7 @@ class _MethodScreenState extends State<MethodScreen> {
             FilledButton(
               onPressed: _selected == null
                   ? null
-                  : () {
-                      final method = methodById(_selected!);
-                      Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) => GuidelinesScreen(
-                            method: method,
-                            cameras: widget.cameras,
-                            depthSupported: _depthSupported,
-                          ),
-                        ),
-                      );
-                    },
+                  : () => _openGuidelines(methodById(_selected!)),
               child: const Text('Continue to guidelines'),
             ),
           ],

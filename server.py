@@ -1,5 +1,5 @@
 """
-Foot Measure Lab API (no web UI).
+Foot Measure production API (A4 paper + ML segmentation).
 
 Used by the Flutter app for live Ready checks and background measurement.
 
@@ -10,44 +10,74 @@ Run:
 from __future__ import annotations
 
 import io
+import os
 import threading
 import time
 import uuid
+from collections import defaultdict
 from pathlib import Path
 
 import cv2
 import numpy as np
-from fastapi import FastAPI, File, Form, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from PIL import Image, ImageOps
 
 from capture_validate import validate_frame
-from main import (
-    ensure_output_dir,
-    measure_with_both,
-    measure_with_card,
-    measure_with_depth,
-    measure_with_paper,
-)
+from job_store import JobStore
+from ml_measure import MeasureError, measure_burst_median, measure_paper_ml
+from seg_infer import load_model_card, model_load_error, model_loaded
 from shoe_size import sizes_from_cm
 
 ROOT = Path(__file__).resolve().parent
 UPLOADS = ROOT / 'output' / 'uploads'
-JOBS: dict[str, dict] = {}
-JOBS_LOCK = threading.Lock()
+JOBS_DIR = ROOT / 'output' / 'jobs'
+STORE = JobStore()
 
-app = FastAPI(title='Foot Measure Lab API', version='2.0.0')
+LAB_MODES = os.environ.get('LAB_MODES', '0') == '1'
+CORS_ORIGINS = [
+    o.strip()
+    for o in os.environ.get('CORS_ORIGINS', '*').split(',')
+    if o.strip()
+]
+RATE_LIMIT_PER_MIN = int(os.environ.get('RATE_LIMIT_PER_MIN', '60'))
+
+app = FastAPI(title='Foot Measure API', version='3.0.0')
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=['*'],
+    allow_origins=CORS_ORIGINS if CORS_ORIGINS != ['*'] else ['*'],
     allow_methods=['*'],
     allow_headers=['*'],
 )
 
+_rate: dict[str, list[float]] = defaultdict(list)
+_rate_lock = threading.Lock()
+
+
+def _client_ip(request: Request) -> str:
+    forwarded = request.headers.get('x-forwarded-for')
+    if forwarded:
+        return forwarded.split(',')[0].strip()
+    if request.client:
+        return request.client.host
+    return 'unknown'
+
+
+def _check_rate(request: Request):
+    if RATE_LIMIT_PER_MIN <= 0:
+        return
+    ip = _client_ip(request)
+    now = time.time()
+    with _rate_lock:
+        window = [t for t in _rate[ip] if now - t < 60.0]
+        if len(window) >= RATE_LIMIT_PER_MIN:
+            raise HTTPException(status_code=429, detail='Rate limit exceeded')
+        window.append(now)
+        _rate[ip] = window
+
 
 def _read_rgb(data: bytes, max_side: int = 1600):
-    """Returns (rgb_uint8, scale) where scale is the resize factor on width/height."""
     img = Image.open(io.BytesIO(data))
     img = ImageOps.exif_transpose(img).convert('RGB')
     w, h = img.size
@@ -68,83 +98,152 @@ def _downscale(rgb: np.ndarray, max_side: int = 480) -> np.ndarray:
     return cv2.resize(rgb, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
 
 
+def _round_cm(cm: float) -> float:
+    return round(cm * 2) / 2.0
+
+
+def _assert_mode(mode: str):
+    if mode == 'paper':
+        return
+    if LAB_MODES and mode in ('card', 'both', 'depth'):
+        return
+    raise HTTPException(
+        status_code=400,
+        detail='Production supports mode=paper only. Set LAB_MODES=1 for lab modes.',
+    )
+
+
 def _run_job(job_id: str):
-    with JOBS_LOCK:
-        job = JOBS[job_id]
-        job['status'] = 'running'
-        job['started_at'] = time.time()
-        mode = job['mode']
-        rgb_path = Path(job['rgb_path'])
-        depth_path = job.get('depth_path')
-        depth_scale = job.get('depth_scale')
-        fx = job.get('fx')
-        fy = job.get('fy')
-        cx = job.get('cx')
-        cy = job.get('cy')
+    job = STORE.get(job_id)
+    if not job:
+        return
+    STORE.update(job_id, status='running', started_at=time.time())
+    mode = job['mode']
+    out_dir = Path(job['out_dir'])
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        ensure_output_dir()
-        rgb, img_scale = _read_rgb(rgb_path.read_bytes())
+        paths = job.get('rgb_paths') or [job['rgb_path']]
+        rgbs = []
+        for p in paths:
+            rgb, _ = _read_rgb(Path(p).read_bytes())
+            rgbs.append(rgb)
+
         if mode == 'paper':
-            cm = measure_with_paper(rgb)
-        elif mode == 'card':
+            if len(rgbs) > 1:
+                measured = measure_burst_median(rgbs, out_dir=out_dir)
+            else:
+                measured = measure_paper_ml(rgbs[0], out_dir=out_dir)
+            cm = measured['cm']
+            sizes = sizes_from_cm(cm)
+            sizes['cm'] = _round_cm(cm)
+            sizes['cm_raw'] = round(float(cm), 2)
+            sizes['cm_spread'] = round(float(measured.get('cm_spread', 0.0)), 2)
+            sizes['confidence'] = round(float(measured.get('confidence', 0.0)), 3)
+            preview = None
+            preview_file = out_dir / 'preview.jpg'
+            if not preview_file.is_file():
+                # burst stores under frame_0
+                alt = out_dir / 'frame_0' / 'preview.jpg'
+                if alt.is_file():
+                    preview_file = alt
+            if preview_file.is_file():
+                preview = f'/output/jobs/{job_id}/{preview_file.relative_to(out_dir).as_posix()}'
+            STORE.update(
+                job_id,
+                status='done',
+                finished_at=time.time(),
+                result=sizes,
+                preview_url=preview,
+                error=None,
+                meta={
+                    'seg_source': measured.get('seg_source'),
+                    'paper_score': measured.get('paper_score'),
+                    'foot_score': measured.get('foot_score'),
+                    'n_ok': measured.get('n_ok', 1),
+                },
+            )
+            return
+
+        # Lab modes only
+        from main import (
+            measure_with_both,
+            measure_with_card,
+            measure_with_depth,
+            measure_with_paper,
+        )
+
+        rgb = rgbs[0]
+        if mode == 'card':
             cm = measure_with_card(rgb)
         elif mode == 'both':
             cm = measure_with_both(rgb)
-        else:
+        elif mode == 'depth':
+            depth_path = job.get('depth_path')
             if not depth_path:
-                raise ValueError(
-                    'Depth mode needs an aligned metric depth map from a native LiDAR/AR export.'
-                )
-            fx_s = fx * img_scale if fx is not None else None
-            fy_s = fy * img_scale if fy is not None else None
-            cx_s = cx * img_scale if cx is not None else None
-            cy_s = cy * img_scale if cy is not None else None
-            cm = measure_with_depth(
-                rgb,
-                depth_path,
-                depth_scale=depth_scale,
-                fx=fx_s,
-                fy=fy_s,
-                cx=cx_s,
-                cy=cy_s,
-            )
-
+                raise ValueError('Depth mode needs a depth map')
+            cm = measure_with_depth(rgb, depth_path)
+        else:
+            cm = measure_with_paper(rgb)
         sizes = sizes_from_cm(cm)
-        preview = None
-        for name in ('card_detect.jpg', 'depth_detect.jpg', 'fdraw.jpg', 'pdraw.jpg'):
-            p = ROOT / 'output' / name
-            if p.is_file():
-                preview = f'/output/{name}?t={int(time.time())}'
-                break
-
-        with JOBS_LOCK:
-            JOBS[job_id].update({
-                'status': 'done',
-                'finished_at': time.time(),
-                'result': sizes,
-                'preview_url': preview,
-                'error': None,
-            })
+        sizes['cm'] = _round_cm(cm)
+        STORE.update(
+            job_id,
+            status='done',
+            finished_at=time.time(),
+            result=sizes,
+            preview_url=None,
+            error=None,
+        )
+    except MeasureError as e:
+        STORE.update(
+            job_id,
+            status='error',
+            finished_at=time.time(),
+            error=e.message,
+            error_code=e.code,
+        )
     except Exception as e:
-        with JOBS_LOCK:
-            JOBS[job_id].update({
-                'status': 'error',
-                'finished_at': time.time(),
-                'error': str(e),
-            })
+        STORE.update(
+            job_id,
+            status='error',
+            finished_at=time.time(),
+            error=str(e),
+            error_code='ERROR',
+        )
+
+
+@app.on_event('startup')
+def _startup():
+    UPLOADS.mkdir(parents=True, exist_ok=True)
+    JOBS_DIR.mkdir(parents=True, exist_ok=True)
+    load_model_card()
+    model_loaded()  # warm attempt
+    STORE.cleanup(ttl_seconds=float(os.environ.get('JOB_TTL_SECONDS', '86400')))
 
 
 @app.get('/api/health')
 def health():
-    return {'ok': True, 'service': 'foot-measure-lab-api'}
+    loaded = model_loaded()
+    return {
+        'ok': True,
+        'service': 'foot-measure-api',
+        'version': '3.0.0',
+        'model_loaded': loaded,
+        'model_error': model_load_error(),
+        'lab_modes': LAB_MODES,
+        'model_card': load_model_card().get('version'),
+    }
 
 
 @app.post('/api/validate')
 async def api_validate(
+    request: Request,
     frame: UploadFile = File(...),
-    mode: str = Form('card'),
+    mode: str = Form('paper'),
 ):
+    _check_rate(request)
+    _assert_mode(mode)
     data = await frame.read()
     if not data:
         return {'ready': False, 'message': 'Empty frame', 'checks': {}, 'hints': []}
@@ -155,8 +254,10 @@ async def api_validate(
 
 @app.post('/api/jobs')
 async def create_job(
-    image: UploadFile = File(...),
-    mode: str = Form('card'),
+    request: Request,
+    image: UploadFile | None = File(None),
+    images: list[UploadFile] | None = File(None),
+    mode: str = Form('paper'),
     depth: UploadFile | None = File(None),
     depth_scale: float | None = Form(None),
     fx: float | None = Form(None),
@@ -164,13 +265,27 @@ async def create_job(
     cx: float | None = Form(None),
     cy: float | None = Form(None),
 ):
-    if mode not in ('paper', 'card', 'both', 'depth'):
-        return {'error': 'Invalid mode'}
+    _check_rate(request)
+    _assert_mode(mode)
+
+    files: list[UploadFile] = []
+    if images:
+        files.extend(images)
+    if image is not None and image.filename:
+        files.append(image)
+    if not files:
+        raise HTTPException(status_code=400, detail='Provide image or images')
 
     UPLOADS.mkdir(parents=True, exist_ok=True)
     job_id = uuid.uuid4().hex[:12]
-    rgb_path = UPLOADS / f'{job_id}.jpg'
-    rgb_path.write_bytes(await image.read())
+    out_dir = JOBS_DIR / job_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    rgb_paths = []
+    for i, f in enumerate(files[:3]):
+        path = UPLOADS / f'{job_id}_{i}.jpg'
+        path.write_bytes(await f.read())
+        rgb_paths.append(str(path))
 
     depth_path = None
     if depth is not None and depth.filename:
@@ -178,60 +293,33 @@ async def create_job(
         depth_path = str(UPLOADS / f'{job_id}_depth{ext}')
         Path(depth_path).write_bytes(await depth.read())
 
-    with JOBS_LOCK:
-        JOBS[job_id] = {
-            'id': job_id,
-            'status': 'queued',
-            'mode': mode,
-            'rgb_path': str(rgb_path),
-            'depth_path': depth_path,
-            'depth_scale': depth_scale,
-            'fx': fx,
-            'fy': fy,
-            'cx': cx,
-            'cy': cy,
-            'created_at': time.time(),
-            'result': None,
-            'preview_url': None,
-            'error': None,
-        }
+    job = {
+        'id': job_id,
+        'status': 'queued',
+        'mode': mode,
+        'rgb_path': rgb_paths[0],
+        'rgb_paths': rgb_paths,
+        'out_dir': str(out_dir),
+        'depth_path': depth_path,
+        'depth_scale': depth_scale,
+        'fx': fx,
+        'fy': fy,
+        'cx': cx,
+        'cy': cy,
+        'created_at': time.time(),
+        'result': None,
+        'preview_url': None,
+        'error': None,
+    }
+    STORE.put(job_id, job)
 
     if mode == 'depth' and depth_path is None:
-        with JOBS_LOCK:
-            JOBS[job_id]['status'] = 'awaiting_depth'
-            JOBS[job_id]['message'] = (
-                'No depth map received. Use a LiDAR/AR-capable phone with the '
-                'Flutter app Depth mode, or switch to credit-card mode.'
-            )
+        STORE.update(
+            job_id,
+            status='awaiting_depth',
+            message='No depth map received.',
+        )
         return {'job_id': job_id, 'status': 'awaiting_depth'}
-
-    threading.Thread(target=_run_job, args=(job_id,), daemon=True).start()
-    return {'job_id': job_id, 'status': 'queued'}
-
-
-@app.post('/api/jobs/{job_id}/depth')
-async def attach_depth(
-    job_id: str,
-    depth: UploadFile = File(...),
-    depth_scale: float | None = Form(None),
-):
-    with JOBS_LOCK:
-        job = JOBS.get(job_id)
-        if not job:
-            return {'error': 'Unknown job'}
-        if job['status'] not in ('awaiting_depth', 'error'):
-            return {'error': f'Job not waiting for depth (status={job["status"]})'}
-
-    UPLOADS.mkdir(parents=True, exist_ok=True)
-    ext = Path(depth.filename or 'depth.npy').suffix.lower() or '.npy'
-    depth_path = UPLOADS / f'{job_id}_depth{ext}'
-    depth_path.write_bytes(await depth.read())
-
-    with JOBS_LOCK:
-        JOBS[job_id]['depth_path'] = str(depth_path)
-        JOBS[job_id]['depth_scale'] = depth_scale
-        JOBS[job_id]['status'] = 'queued'
-        JOBS[job_id]['mode'] = 'depth'
 
     threading.Thread(target=_run_job, args=(job_id,), daemon=True).start()
     return {'job_id': job_id, 'status': 'queued'}
@@ -239,24 +327,35 @@ async def attach_depth(
 
 @app.get('/api/jobs/{job_id}')
 def get_job(job_id: str):
-    with JOBS_LOCK:
-        job = JOBS.get(job_id)
-        if not job:
-            return {'error': 'Unknown job'}
-        return {
-            'id': job['id'],
-            'status': job['status'],
-            'mode': job['mode'],
-            'message': job.get('message'),
-            'result': job.get('result'),
-            'preview_url': job.get('preview_url'),
-            'error': job.get('error'),
-        }
+    job = STORE.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail='Unknown job')
+    return {
+        'id': job['id'],
+        'status': job['status'],
+        'mode': job['mode'],
+        'message': job.get('message'),
+        'result': job.get('result'),
+        'preview_url': job.get('preview_url'),
+        'error': job.get('error'),
+        'error_code': job.get('error_code'),
+        'meta': job.get('meta'),
+    }
+
+
+@app.get('/output/jobs/{job_id}/{name:path}')
+def serve_job_output(job_id: str, name: str):
+    path = (JOBS_DIR / job_id / name).resolve()
+    if not str(path).startswith(str(JOBS_DIR.resolve())):
+        raise HTTPException(status_code=400, detail='Invalid path')
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail='not found')
+    return FileResponse(path)
 
 
 @app.get('/output/{name}')
 def serve_output(name: str):
     path = ROOT / 'output' / name
     if not path.is_file():
-        return {'error': 'not found'}
+        return JSONResponse({'error': 'not found'}, status_code=404)
     return FileResponse(path)

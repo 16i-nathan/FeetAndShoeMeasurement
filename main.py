@@ -62,6 +62,18 @@ def measure_with_paper(oimg):
     return float(result['cm'])
 
 
+def measure_with_gemini(oimg):
+    """AI length_cm via Gemini (requires GEMINI_API_KEY). Returns cm."""
+    from gemini_measure import measure_paper_gemini
+    from ml_measure import MeasureError
+
+    try:
+        result = measure_paper_gemini(oimg, out_dir=Path('output'))
+    except MeasureError as e:
+        raise ValueError(e.message) from e
+    return float(result['cm'])
+
+
 def measure_with_paper_classical(oimg):
     """Legacy classical CV pipeline (lab/debug only)."""
     preprocessedOimg = preprocess(oimg)
@@ -194,14 +206,15 @@ def parse_args():
     )
     p.add_argument(
         '--ref',
-        choices=('paper', 'card', 'both', 'depth'),
+        choices=('paper', 'card', 'both', 'depth', 'gemini'),
         default='paper',
         help=(
             'Scale reference: '
             'paper = A4 (210x297mm), '
             'card = ISO credit card (85.60x53.98mm), '
             'both = paper ROI + card scale, '
-            'depth = LiDAR/ToF/RGB-D metric depth'
+            'depth = LiDAR/ToF/RGB-D metric depth, '
+            'gemini = Gemini vision length_cm (needs GEMINI_API_KEY)'
         ),
     )
     p.add_argument(
@@ -238,6 +251,8 @@ def main():
     try:
         if args.ref == 'paper':
             cm = measure_with_paper(oimg)
+        elif args.ref == 'gemini':
+            cm = measure_with_gemini(oimg)
         elif args.ref == 'card':
             cm = measure_with_card(oimg)
         elif args.ref == 'both':

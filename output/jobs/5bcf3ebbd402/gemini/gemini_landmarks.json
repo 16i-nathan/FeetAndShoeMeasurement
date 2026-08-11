@@ -1,0 +1,33 @@
+{
+  "length_cm": 26.0,
+  "confidence": 0.9,
+  "heel_norm": [
+    0.5,
+    0.698
+  ],
+  "paper_corners_norm": [
+    [
+      0.264,
+      0.385
+    ],
+    [
+      0.736,
+      0.385
+    ],
+    [
+      0.736,
+      0.719
+    ],
+    [
+      0.264,
+      0.719
+    ]
+  ],
+  "toe_norm": [
+    0.5,
+    0.406
+  ],
+  "cm": 26.0,
+  "method": "ai_length_cm",
+  "model": "gemini-2.5-flash"
+}

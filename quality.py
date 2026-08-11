@@ -26,8 +26,8 @@ class QualityThresholds:
     foot_aspect_min: float = 1.25
     # Only flag incomplete foot when the blob is clearly short vs the sheet
     foot_to_paper_min: float = 0.42
-    aspect_err_max: float = 0.22
-    tilt_max: float = 0.22  # |1 - aspect/expected| proxy + corner skew
+    aspect_err_max: float = 0.28
+    tilt_max: float = 0.28  # |1 - aspect/expected| proxy + corner skew
     border_touch_max: float = 0.10
     paper_score_min: float = 0.40
     foot_score_min: float = 0.35

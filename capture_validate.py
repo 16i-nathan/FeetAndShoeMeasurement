@@ -100,13 +100,14 @@ def validate_frame(rgb: np.ndarray, mode: str = 'paper') -> dict:
     if mode == 'depth':
         return _validate_depth(rgb, checks, hints, errors, detail, thr)
 
-    if mode != 'paper':
+    # gemini / compare use the same A4 Ready path as paper
+    if mode not in ('paper', 'gemini', 'compare'):
         return {
             'ready': False,
             'score': 0.0,
             'checks': {k: bool(v) for k, v in checks.items()},
-            'hints': ['Supported modes: paper, depth'],
-            'message': 'Use A4 paper or Depth mode',
+            'hints': ['Supported modes: paper, depth, gemini, compare'],
+            'message': 'Use A4 paper, Depth, AI, or Compare mode',
             'errors': ['MODE'],
             'detail': detail,
         }

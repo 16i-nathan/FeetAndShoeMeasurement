@@ -45,6 +45,8 @@ class MeasureResult {
     this.cmRaw,
     this.cmSpread,
     this.confidence,
+    this.compare,
+    this.backend,
   });
 
   final double cm;
@@ -55,8 +57,11 @@ class MeasureResult {
   final double? cmRaw;
   final double? cmSpread;
   final double? confidence;
+  final CompareBlock? compare;
+  final String? backend;
 
   factory MeasureResult.fromJson(Map<String, dynamic> j) {
+    final rawCompare = j['compare'];
     return MeasureResult(
       cm: (j['cm'] as num).toDouble(),
       eu: j['eu'],
@@ -68,6 +73,10 @@ class MeasureResult {
           j['cm_spread'] is num ? (j['cm_spread'] as num).toDouble() : null,
       confidence:
           j['confidence'] is num ? (j['confidence'] as num).toDouble() : null,
+      compare: rawCompare is Map<String, dynamic>
+          ? CompareBlock.fromJson(rawCompare)
+          : null,
+      backend: j['backend'] as String?,
     );
   }
 
@@ -77,6 +86,109 @@ class MeasureResult {
       return '${cm.toStringAsFixed(1)} ± ${spread.toStringAsFixed(1)} cm';
     }
     return '${cm.toStringAsFixed(1)} cm';
+  }
+}
+
+class CompareSide {
+  CompareSide({this.cm, this.cmRaw, this.confidence, this.error});
+
+  final double? cm;
+  final double? cmRaw;
+  final double? confidence;
+  final String? error;
+
+  factory CompareSide.fromJson(Map<String, dynamic>? j) {
+    if (j == null) return CompareSide();
+    return CompareSide(
+      cm: j['cm'] is num ? (j['cm'] as num).toDouble() : null,
+      cmRaw: j['cm_raw'] is num ? (j['cm_raw'] as num).toDouble() : null,
+      confidence:
+          j['confidence'] is num ? (j['confidence'] as num).toDouble() : null,
+      error: j['error'] as String?,
+    );
+  }
+}
+
+class CompareBlock {
+  CompareBlock({
+    required this.local,
+    required this.gemini,
+    this.truthCm,
+    this.localErrorMm,
+    this.geminiErrorMm,
+    this.localScore,
+    this.geminiScore,
+  });
+
+  final CompareSide local;
+  final CompareSide gemini;
+  final double? truthCm;
+  final double? localErrorMm;
+  final double? geminiErrorMm;
+  final double? localScore;
+  final double? geminiScore;
+
+  factory CompareBlock.fromJson(Map<String, dynamic> j) {
+    final errors = (j['errors_mm'] as Map?) ?? const {};
+    final scores = (j['scores'] as Map?) ?? const {};
+    return CompareBlock(
+      local: CompareSide.fromJson(
+        j['local'] is Map<String, dynamic>
+            ? j['local'] as Map<String, dynamic>
+            : null,
+      ),
+      gemini: CompareSide.fromJson(
+        j['gemini'] is Map<String, dynamic>
+            ? j['gemini'] as Map<String, dynamic>
+            : null,
+      ),
+      truthCm: j['truth_cm'] is num ? (j['truth_cm'] as num).toDouble() : null,
+      localErrorMm:
+          errors['local'] is num ? (errors['local'] as num).toDouble() : null,
+      geminiErrorMm:
+          errors['gemini'] is num ? (errors['gemini'] as num).toDouble() : null,
+      localScore:
+          scores['local'] is num ? (scores['local'] as num).toDouble() : null,
+      geminiScore:
+          scores['gemini'] is num ? (scores['gemini'] as num).toDouble() : null,
+    );
+  }
+}
+
+class TruthSubmitResult {
+  TruthSubmitResult({
+    required this.truthCm,
+    this.winner,
+    this.localScore,
+    this.geminiScore,
+    this.primaryScore,
+    this.result,
+  });
+
+  final double truthCm;
+  final String? winner;
+  final double? localScore;
+  final double? geminiScore;
+  final double? primaryScore;
+  final MeasureResult? result;
+
+  factory TruthSubmitResult.fromJson(Map<String, dynamic> j) {
+    final scores = (j['scores'] as Map?) ?? const {};
+    final result = j['result'];
+    return TruthSubmitResult(
+      truthCm: (j['truth_cm'] as num).toDouble(),
+      winner: j['winner'] as String?,
+      localScore:
+          scores['local'] is num ? (scores['local'] as num).toDouble() : null,
+      geminiScore:
+          scores['gemini'] is num ? (scores['gemini'] as num).toDouble() : null,
+      primaryScore: scores['primary'] is num
+          ? (scores['primary'] as num).toDouble()
+          : null,
+      result: result is Map<String, dynamic>
+          ? MeasureResult.fromJson(result)
+          : null,
+    );
   }
 }
 
@@ -215,6 +327,36 @@ class MeasureApi {
       throw Exception('Job poll failed (${res.statusCode}): ${res.body}');
     }
     return JobStatus.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
+  }
+
+  Future<Map<String, dynamic>> health() async {
+    final res = await http
+        .get(_u('/api/health'))
+        .timeout(const Duration(seconds: 10));
+    if (res.statusCode >= 400) {
+      throw Exception('Health failed (${res.statusCode}): ${res.body}');
+    }
+    return jsonDecode(res.body) as Map<String, dynamic>;
+  }
+
+  Future<TruthSubmitResult> submitTruth(
+    String jobId,
+    double truthCm, {
+    String notes = '',
+  }) async {
+    final res = await http
+        .post(
+          _u('/api/jobs/$jobId/truth'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({'truth_cm': truthCm, 'notes': notes}),
+        )
+        .timeout(const Duration(seconds: 30));
+    if (res.statusCode >= 400) {
+      throw Exception('Truth failed (${res.statusCode}): ${res.body}');
+    }
+    return TruthSubmitResult.fromJson(
+      jsonDecode(res.body) as Map<String, dynamic>,
+    );
   }
 
   Future<JobStatus> waitForJob(

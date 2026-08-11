@@ -80,6 +80,60 @@ const depthMethod = MeasureMethod(
   ],
 );
 
+const geminiMethod = MeasureMethod(
+  id: 'gemini',
+  title: 'AI / Gemini',
+  subtitle: 'A4 sheet + cloud vision length — needs API key on server',
+  icon: 'auto_awesome',
+  guideAsset: 'assets/guides/rgb_guide.png',
+  dos: [
+    'Entire A4 sheet visible (all four corners)',
+    'Foot fully on the paper (toes to heel)',
+    'Phone parallel to the floor (true top-down)',
+    'Dark non-white floor, soft even light, flash off',
+  ],
+  donts: [
+    'Paper corners cut off',
+    'Angled / perspective shot',
+    'Flash glare or hard shadows',
+    'White floor (hard to see paper)',
+  ],
+  checklist: [
+    'Top-down',
+    'Full A4 in frame',
+    'Foot on paper',
+    'No flash',
+    'Dark floor',
+  ],
+);
+
+const compareMethod = MeasureMethod(
+  id: 'compare',
+  title: 'Compare',
+  subtitle: 'Local A4 ML + Gemini in one shot — for scoring vs your truth',
+  icon: 'compare',
+  guideAsset: 'assets/guides/rgb_guide.png',
+  dos: [
+    'Entire A4 sheet visible (all four corners)',
+    'Foot fully on the paper (toes to heel)',
+    'Phone parallel to the floor (true top-down)',
+    'Dark non-white floor, soft even light, flash off',
+  ],
+  donts: [
+    'Paper corners cut off',
+    'Angled / perspective shot',
+    'Flash glare or hard shadows',
+    'White floor (hard to see paper)',
+  ],
+  checklist: [
+    'Top-down',
+    'Full A4 in frame',
+    'Foot on paper',
+    'No flash',
+    'Dark floor',
+  ],
+);
+
 const labMethods = <MeasureMethod>[
   MeasureMethod(
     id: 'card',
@@ -133,9 +187,16 @@ const labMethods = <MeasureMethod>[
   ),
 ];
 
-/// Production: A4 paper + Depth/LiDAR. Lab modes add card/both.
-List<MeasureMethod> methodsForBuild({required bool labModes}) {
+/// Production: A4 paper + Depth/LiDAR. Gemini/Compare when server has GEMINI_API_KEY.
+/// Lab modes add card/both.
+List<MeasureMethod> methodsForBuild({
+  required bool labModes,
+  bool geminiConfigured = false,
+}) {
   final core = <MeasureMethod>[paperMethod, depthMethod];
+  if (geminiConfigured) {
+    core.addAll([geminiMethod, compareMethod]);
+  }
   if (labModes) {
     return [...core, ...labMethods];
   }
@@ -143,6 +204,12 @@ List<MeasureMethod> methodsForBuild({required bool labModes}) {
 }
 
 MeasureMethod methodById(String id) {
-  final all = [paperMethod, depthMethod, ...labMethods];
+  final all = [
+    paperMethod,
+    depthMethod,
+    geminiMethod,
+    compareMethod,
+    ...labMethods,
+  ];
   return all.firstWhere((m) => m.id == id, orElse: () => paperMethod);
 }

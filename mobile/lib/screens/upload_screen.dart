@@ -111,7 +111,15 @@ class _UploadMeasureScreenState extends State<UploadMeasureScreen> {
       }
       setState(() => _status = 'Measure…');
       final jobId = await _api.createJob(_bytes!, widget.method.id);
-      final job = await _api.waitForJob(jobId);
+      final job = await _api.waitForJob(
+        jobId,
+        timeout: Duration(
+          seconds: (widget.method.id == 'gemini' ||
+                  widget.method.id == 'compare')
+              ? 120
+              : 120,
+        ),
+      );
       if (!mounted) return;
       if (job.status == 'done' && job.result != null) {
         await Navigator.of(context).pushReplacement(
@@ -121,6 +129,7 @@ class _UploadMeasureScreenState extends State<UploadMeasureScreen> {
               mode: job.mode,
               cameras: widget.cameras,
               previewUrl: job.previewUrl,
+              jobId: job.id,
             ),
           ),
         );

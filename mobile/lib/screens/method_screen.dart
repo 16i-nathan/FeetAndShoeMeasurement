@@ -2,6 +2,7 @@ import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 
+import '../api/measure_api.dart';
 import '../config.dart';
 import '../models/measure_method.dart';
 import '../services/depth_capture.dart';
@@ -21,14 +22,19 @@ class _MethodScreenState extends State<MethodScreen> {
   String? _selected;
   /// Soft hint only — Depth is never disabled here.
   bool _depthHint = true;
+  bool _geminiConfigured = false;
 
-  List<MeasureMethod> get _methods => methodsForBuild(labModes: labModes);
+  List<MeasureMethod> get _methods => methodsForBuild(
+        labModes: labModes,
+        geminiConfigured: _geminiConfigured,
+      );
 
   @override
   void initState() {
     super.initState();
     _selected = paperMethod.id;
     _probeDepthHint();
+    _probeGemini();
   }
 
   Future<void> _probeDepthHint() async {
@@ -40,6 +46,16 @@ class _MethodScreenState extends State<MethodScreen> {
     final ok = await DepthCapture.isSupported();
     if (!mounted) return;
     setState(() => _depthHint = ok);
+  }
+
+  Future<void> _probeGemini() async {
+    try {
+      final h = await MeasureApi().health();
+      if (!mounted) return;
+      setState(() => _geminiConfigured = h['gemini_configured'] == true);
+    } catch (_) {
+      // Keep gemini hidden if health is unreachable.
+    }
   }
 
   void _open(MeasureMethod method) {
@@ -65,8 +81,42 @@ class _MethodScreenState extends State<MethodScreen> {
         return Icons.layers_rounded;
       case 'view_in_ar':
         return Icons.view_in_ar_rounded;
+      case 'auto_awesome':
+        return Icons.auto_awesome_rounded;
+      case 'compare':
+        return Icons.compare_arrows_rounded;
       default:
         return Icons.straighten;
+    }
+  }
+
+  String _cardTitle(MeasureMethod m) {
+    switch (m.id) {
+      case 'paper':
+        return 'A4';
+      case 'depth':
+        return 'Depth';
+      case 'gemini':
+        return 'AI';
+      case 'compare':
+        return 'Compare';
+      default:
+        return m.title;
+    }
+  }
+
+  String _cardSubtitle(MeasureMethod m) {
+    switch (m.id) {
+      case 'paper':
+        return 'Any phone';
+      case 'depth':
+        return 'LiDAR / AR';
+      case 'gemini':
+        return 'Gemini cloud';
+      case 'compare':
+        return 'Local + AI';
+      default:
+        return m.subtitle;
     }
   }
 
@@ -100,12 +150,10 @@ class _MethodScreenState extends State<MethodScreen> {
                   children: [
                     for (final m in _methods) ...[
                       _ModeCard(
-                        title: m.id == 'paper'
-                            ? 'A4'
-                            : (m.id == 'depth' ? 'Depth' : m.title),
-                        subtitle: m.id == 'paper'
-                            ? 'Any phone'
-                            : (m.id == 'depth' ? 'LiDAR / AR' : m.subtitle),
+                        title: _cardTitle(m),
+                        subtitle: m.id == 'depth' && !_depthHint
+                            ? 'Needs LiDAR / ARCore phone'
+                            : _cardSubtitle(m),
                         icon: _icon(m.icon),
                         selected: _selected == m.id,
                         onTap: () => setState(() => _selected = m.id),

@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Foot Measure — Analysis</title>
+  <style>
+    :root {
+      --bg: #f6f5f2;
+      --ink: #1a1a1a;
+      --muted: #6b6b6b;
+      --line: #ddd9d2;
+      --surface: #fff;
+      --accent: #0f6b5c;
+      --good: #1b7a3d;
+      --bad: #a33;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      line-height: 1.45;
+    }
+    header {
+      padding: 28px 24px 12px;
+      max-width: 1100px;
+      margin: 0 auto;
+    }
+    h1 { margin: 0 0 6px; font-size: 1.75rem; letter-spacing: -0.03em; }
+    .sub { color: var(--muted); margin: 0; }
+    main { max-width: 1100px; margin: 0 auto; padding: 12px 24px 48px; }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 12px;
+      margin: 20px 0 28px;
+    }
+    .stat {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 14px 16px;
+    }
+    .stat .label { color: var(--muted); font-size: 0.8rem; font-weight: 600; }
+    .stat .value { font-size: 1.45rem; font-weight: 800; margin-top: 4px; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      overflow: hidden;
+      font-size: 0.9rem;
+    }
+    th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--line); }
+    th { background: #efece6; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+    tr:last-child td { border-bottom: none; }
+    .win { color: var(--good); font-weight: 700; }
+    .mono { font-variant-numeric: tabular-nums; }
+    .toolbar { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; align-items: center; }
+    button, a.btn {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 8px 14px;
+      font-weight: 700;
+      cursor: pointer;
+      text-decoration: none;
+      font-size: 0.9rem;
+    }
+    .empty { color: var(--muted); padding: 24px 0; }
+    footer { max-width: 1100px; margin: 0 auto; padding: 0 24px 40px; color: var(--muted); font-size: 0.85rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Measurement analysis</h1>
+    <p class="sub">Manual truth vs local paper ML and Gemini · durable store (survives job TTL)</p>
+  </header>
+  <main>
+    <div class="toolbar">
+      <button type="button" id="refresh">Refresh</button>
+      <a class="btn" href="/api/analysis/export" download="tries.json">Export JSON</a>
+      <span class="sub" id="updated"></span>
+    </div>
+    <div class="stats" id="stats"></div>
+    <div id="table-wrap"><p class="empty">Loading…</p></div>
+  </main>
+  <footer>
+    Depth is always enabled on the API (<code>mode=depth</code>). On a LiDAR / ARCore phone, pick Depth in the app — no LAB_MODES flag needed.
+    Compare mode requires <code>GEMINI_API_KEY</code>. Data: <code>output/analysis.sqlite3</code>
+  </footer>
+  <script>
+    function fmt(v, digits=1) {
+      if (v === null || v === undefined) return '—';
+      return Number(v).toFixed(digits);
+    }
+    function when(ts) {
+      if (!ts) return '—';
+      return new Date(ts * 1000).toLocaleString();
+    }
+    async function load() {
+      const [sumRes, listRes] = await Promise.all([
+        fetch('/api/analysis/summary'),
+        fetch('/api/analysis/tries?limit=300'),
+      ]);
+      const summary = await sumRes.json();
+      const list = await listRes.json();
+      const tries = list.tries || [];
+      document.getElementById('updated').textContent =
+        'Updated ' + new Date().toLocaleTimeString();
+
+      const stats = [
+        ['Tries', summary.n],
+        ['Local MAE (mm)', fmt(summary.local_mae_mm)],
+        ['Gemini MAE (mm)', fmt(summary.gemini_mae_mm)],
+        ['Primary MAE (mm)', fmt(summary.primary_mae_mm)],
+        ['Local score', fmt(summary.local_mean_score, 3)],
+        ['Gemini score', fmt(summary.gemini_mean_score, 3)],
+        ['Local wins', (summary.wins && summary.wins.local) || 0],
+        ['Gemini wins', (summary.wins && summary.wins.gemini) || 0],
+        ['Ties', (summary.wins && summary.wins.tie) || 0],
+      ];
+      document.getElementById('stats').innerHTML = stats.map(([label, value]) =>
+        `<div class="stat"><div class="label">${label}</div><div class="value">${value}</div></div>`
+      ).join('');
+
+      if (!tries.length) {
+        document.getElementById('table-wrap').innerHTML =
+          '<p class="empty">No scored tries yet. Run Compare (or any measure), then enter truth cm on the result screen.</p>';
+        return;
+      }
+      const rows = tries.map(t => {
+        const win = t.winner ? `<span class="win">${t.winner}</span>` : '—';
+        return `<tr>
+          <td class="mono">${when(t.created_at)}</td>
+          <td>${t.mode}</td>
+          <td class="mono">${t.job_id}</td>
+          <td class="mono">${fmt(t.truth_cm)}</td>
+          <td class="mono">${fmt(t.local_cm)} <small>(${fmt(t.local_error_mm)} mm)</small></td>
+          <td class="mono">${fmt(t.gemini_cm)} <small>(${fmt(t.gemini_error_mm)} mm)</small></td>
+          <td class="mono">${fmt(t.primary_cm)} <small>(${fmt(t.primary_error_mm)} mm)</small></td>
+          <td class="mono">${fmt(t.local_score, 3)} / ${fmt(t.gemini_score, 3)}</td>
+          <td>${win}</td>
+        </tr>`;
+      }).join('');
+      document.getElementById('table-wrap').innerHTML = `
+        <table>
+          <thead>
+            <tr>
+              <th>When</th><th>Mode</th><th>Job</th><th>Truth cm</th>
+              <th>Local</th><th>Gemini</th><th>Primary</th><th>Scores</th><th>Winner</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>`;
+    }
+    document.getElementById('refresh').onclick = load;
+    load();
+  </script>
+</body>
+</html>

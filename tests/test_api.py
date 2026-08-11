@@ -39,6 +39,8 @@ def test_health(client):
     body = r.json()
     assert body['ok'] is True
     assert 'model_loaded' in body
+    assert 'gemini_configured' in body
+    assert 'gemini_model' in body
 
 
 def test_rejects_card_mode(client):
@@ -95,3 +97,69 @@ def test_job_paper_burst(client):
         assert 'cm' in j['result']
         cm = j['result']['cm']
         assert abs(cm * 2 - round(cm * 2)) < 1e-6
+
+
+def test_rejects_gemini_mode_without_key(client):
+    prev = os.environ.pop('GEMINI_API_KEY', None)
+    try:
+        # Re-import gate reads env at call time via gemini_configured()
+        rgb, _ = make_sample(256)
+        r = client.post(
+            '/api/validate',
+            data={'mode': 'gemini'},
+            files={'frame': ('f.jpg', _jpeg_bytes(rgb), 'image/jpeg')},
+        )
+        assert r.status_code == 400
+        assert 'GEMINI_API_KEY' in r.json()['detail']
+    finally:
+        if prev is not None:
+            os.environ['GEMINI_API_KEY'] = prev
+
+
+def test_accepts_gemini_mode_when_keyed(client, monkeypatch):
+    monkeypatch.setenv('GEMINI_API_KEY', 'test-key-not-used-for-validate')
+    rgb, _ = make_sample(512)
+    r = client.post(
+        '/api/validate',
+        data={'mode': 'gemini'},
+        files={'frame': ('f.jpg', _jpeg_bytes(rgb), 'image/jpeg')},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert 'ready' in body
+    assert 'checks' in body
+
+
+def test_job_gemini_mocked(client, monkeypatch, tmp_path):
+    monkeypatch.setenv('GEMINI_API_KEY', 'test-key')
+
+    def fake_measure(rgb, out_dir=None, px_per_mm=2.0):
+        return {
+            'cm': 26.5,
+            'confidence': 0.9,
+            'method': 'ai_length_cm',
+            'seg_source': 'gemini-cm:test',
+            'notes': '',
+            'preview_path': None,
+        }
+
+    monkeypatch.setattr(server, 'measure_paper_gemini', fake_measure)
+    rgb, _ = make_sample(512)
+    r = client.post(
+        '/api/jobs',
+        data={'mode': 'gemini'},
+        files={'image': ('c.jpg', _jpeg_bytes(rgb), 'image/jpeg')},
+    )
+    assert r.status_code == 200
+    job_id = r.json()['job_id']
+    import time
+
+    for _ in range(40):
+        j = client.get(f'/api/jobs/{job_id}').json()
+        if j['status'] in ('done', 'error'):
+            break
+        time.sleep(0.1)
+    assert j['status'] == 'done'
+    assert j['result']['cm'] == 26.5
+    assert j['preview_url'] is None
+    assert j['meta']['method'] == 'ai_length_cm'

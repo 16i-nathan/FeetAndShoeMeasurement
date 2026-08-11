@@ -1,0 +1,8 @@
+{
+  "length_cm": 28.2,
+  "confidence": 0.85,
+  "notes": "Slight perspective distortion due to camera angle, but foot is well-placed on the A4 sheet.",
+  "cm": 28.2,
+  "method": "ai_length_cm",
+  "model": "gemini-2.5-flash"
+}

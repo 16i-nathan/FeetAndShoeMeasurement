@@ -1,0 +1,7 @@
+{
+  "length_cm": 28.8,
+  "confidence": 0.9,
+  "cm": 28.8,
+  "method": "ai_length_cm",
+  "model": "gemini-2.5-flash"
+}

@@ -24,7 +24,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from PIL import Image, ImageOps
 
+from analysis_store import AnalysisStore
 from capture_validate import validate_frame
+from gemini_measure import gemini_configured, gemini_model_name, measure_paper_gemini
 from job_store import JobStore
 from ml_measure import MeasureError, measure_burst_median, measure_paper_ml
 from seg_infer import load_model_card, model_load_error, model_loaded
@@ -34,6 +36,8 @@ ROOT = Path(__file__).resolve().parent
 UPLOADS = ROOT / 'output' / 'uploads'
 JOBS_DIR = ROOT / 'output' / 'jobs'
 STORE = JobStore()
+ANALYSIS = AnalysisStore()
+DASHBOARD_HTML = ROOT / 'static' / 'dashboard.html'
 
 LAB_MODES = os.environ.get('LAB_MODES', '0') == '1'
 CORS_ORIGINS = [
@@ -102,14 +106,140 @@ def _round_cm(cm: float) -> float:
     return round(cm * 2) / 2.0
 
 
+def _pack_sizes(cm: float, confidence: float | None = None, **extra) -> dict:
+    sizes = sizes_from_cm(cm)
+    sizes['cm'] = _round_cm(cm)
+    sizes['cm_raw'] = round(float(cm), 2)
+    if confidence is not None:
+        sizes['confidence'] = round(float(confidence), 3)
+    sizes.update(extra)
+    return sizes
+
+
 def _assert_mode(mode: str):
     if mode in ('paper', 'depth'):
         return
+    if mode in ('gemini', 'compare'):
+        if gemini_configured():
+            return
+        raise HTTPException(
+            status_code=400,
+            detail='Gemini not configured. Set GEMINI_API_KEY.',
+        )
     if LAB_MODES and mode in ('card', 'both'):
         return
     raise HTTPException(
         status_code=400,
-        detail='Supported modes: paper, depth. Set LAB_MODES=1 for card/both.',
+        detail=(
+            'Supported modes: paper, depth'
+            + (', gemini, compare' if gemini_configured() else '')
+            + '. Set LAB_MODES=1 for card/both.'
+        ),
+    )
+
+
+def _run_compare(job_id: str, rgb: np.ndarray, out_dir: Path) -> None:
+    """Local paper ML + Gemini in one job. Primary result prefers Gemini."""
+    local_dir = out_dir / 'local'
+    gemini_dir = out_dir / 'gemini'
+    local_dir.mkdir(parents=True, exist_ok=True)
+    gemini_dir.mkdir(parents=True, exist_ok=True)
+
+    local_block: dict = {'cm': None, 'cm_raw': None, 'confidence': None, 'error': None}
+    gemini_block: dict = {'cm': None, 'cm_raw': None, 'confidence': None, 'error': None}
+    local_ok = False
+    gemini_ok = False
+    local_meta: dict = {}
+    gemini_meta: dict = {}
+
+    try:
+        local_m = measure_paper_ml(rgb, out_dir=local_dir)
+        local_ok = True
+        local_block = {
+            'cm': _round_cm(local_m['cm']),
+            'cm_raw': round(float(local_m['cm']), 2),
+            'confidence': round(float(local_m.get('confidence', 0.0)), 3),
+            'error': None,
+        }
+        local_meta = {
+            'seg_source': local_m.get('seg_source'),
+            'paper_score': local_m.get('paper_score'),
+            'foot_score': local_m.get('foot_score'),
+        }
+    except MeasureError as e:
+        local_block['error'] = e.message
+        local_meta = {'error_code': e.code}
+    except Exception as e:
+        local_block['error'] = str(e)
+        local_meta = {'error_code': 'ERROR'}
+
+    try:
+        gemini_m = measure_paper_gemini(rgb, out_dir=gemini_dir)
+        gemini_ok = True
+        gemini_block = {
+            'cm': _round_cm(gemini_m['cm']),
+            'cm_raw': round(float(gemini_m['cm']), 2),
+            'confidence': round(float(gemini_m.get('confidence', 0.0)), 3),
+            'error': None,
+        }
+        gemini_meta = {
+            'method': gemini_m.get('method'),
+            'seg_source': gemini_m.get('seg_source'),
+            'notes': gemini_m.get('notes') or '',
+        }
+    except MeasureError as e:
+        gemini_block['error'] = e.message
+        gemini_meta = {'error_code': e.code}
+    except Exception as e:
+        gemini_block['error'] = str(e)
+        gemini_meta = {'error_code': 'ERROR'}
+
+    if not local_ok and not gemini_ok:
+        raise MeasureError(
+            'COMPARE_FAIL',
+            local_block.get('error') or gemini_block.get('error') or 'Both measures failed',
+        )
+
+    if gemini_ok:
+        primary_cm = float(gemini_block['cm_raw'])
+        primary_conf = gemini_block['confidence']
+        backend = 'gemini'
+    else:
+        primary_cm = float(local_block['cm_raw'])
+        primary_conf = local_block['confidence']
+        backend = 'local'
+
+    sizes = _pack_sizes(primary_cm, primary_conf)
+    sizes['backend'] = backend
+    sizes['method'] = 'compare_local_gemini'
+    sizes['compare'] = {
+        'local': local_block,
+        'gemini': gemini_block,
+        'truth_cm': None,
+        'errors_mm': {'local': None, 'gemini': None},
+        'scores': {'local': None, 'gemini': None},
+    }
+
+    preview = None
+    local_prev = local_dir / 'preview.jpg'
+    if local_prev.is_file():
+        preview = f'/output/jobs/{job_id}/local/preview.jpg'
+
+    STORE.update(
+        job_id,
+        status='done',
+        finished_at=time.time(),
+        result=sizes,
+        preview_url=preview,
+        error=None,
+        truth_cm=None,
+        meta={
+            'local_ok': local_ok,
+            'gemini_ok': gemini_ok,
+            'backend': backend,
+            'local': local_meta,
+            'gemini': gemini_meta,
+        },
     )
 
 
@@ -162,6 +292,32 @@ def _run_job(job_id: str):
                     'n_ok': measured.get('n_ok', 1),
                 },
             )
+            return
+
+        if mode == 'gemini':
+            measured = measure_paper_gemini(rgbs[0], out_dir=out_dir)
+            cm = measured['cm']
+            sizes = sizes_from_cm(cm)
+            sizes['cm'] = _round_cm(cm)
+            sizes['cm_raw'] = round(float(cm), 2)
+            sizes['confidence'] = round(float(measured.get('confidence', 0.0)), 3)
+            STORE.update(
+                job_id,
+                status='done',
+                finished_at=time.time(),
+                result=sizes,
+                preview_url=None,
+                error=None,
+                meta={
+                    'method': measured.get('method'),
+                    'seg_source': measured.get('seg_source'),
+                    'notes': measured.get('notes') or '',
+                },
+            )
+            return
+
+        if mode == 'compare':
+            _run_compare(job_id, rgbs[0], out_dir)
             return
 
         if mode == 'depth':
@@ -266,11 +422,141 @@ def health():
     return {
         'ok': True,
         'service': 'foot-measure-api',
-        'version': '3.0.0',
+        'version': '3.1.0',
         'model_loaded': loaded,
         'model_error': model_load_error(),
         'lab_modes': LAB_MODES,
         'model_card': load_model_card().get('version'),
+        'gemini_configured': gemini_configured(),
+        'gemini_model': gemini_model_name(),
+        # API always accepts mode=depth; device LiDAR/ARCore is checked on the phone.
+        'depth_enabled': True,
+        'modes': (
+            ['paper', 'depth']
+            + (['gemini', 'compare'] if gemini_configured() else [])
+            + (['card', 'both'] if LAB_MODES else [])
+        ),
+    }
+
+
+@app.get('/dashboard')
+def dashboard():
+    if not DASHBOARD_HTML.is_file():
+        raise HTTPException(status_code=404, detail='Dashboard HTML missing')
+    return FileResponse(DASHBOARD_HTML, media_type='text/html')
+
+
+@app.get('/api/analysis/summary')
+def analysis_summary():
+    return ANALYSIS.summary()
+
+
+@app.get('/api/analysis/tries')
+def analysis_tries(limit: int = 200):
+    limit = max(1, min(int(limit), 2000))
+    return {'tries': ANALYSIS.list_tries(limit=limit)}
+
+
+@app.get('/api/analysis/export')
+def analysis_export():
+    return JSONResponse(
+        {
+            'summary': ANALYSIS.summary(),
+            'tries': ANALYSIS.list_tries(limit=5000),
+        }
+    )
+
+
+@app.post('/api/jobs/{job_id}/truth')
+async def submit_truth(job_id: str, request: Request):
+    """Record manual ground-truth cm and score local / gemini / primary."""
+    _check_rate(request)
+    job = STORE.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail='Unknown job')
+    if job.get('status') != 'done':
+        raise HTTPException(status_code=400, detail='Job is not done yet')
+    try:
+        body = await request.json()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail='JSON body required') from e
+    try:
+        truth_cm = float(body.get('truth_cm'))
+    except (TypeError, ValueError) as e:
+        raise HTTPException(status_code=400, detail='truth_cm must be a number') from e
+    if not (12.0 <= truth_cm <= 35.0):
+        raise HTTPException(
+            status_code=400,
+            detail='truth_cm must be between 12 and 35 cm',
+        )
+    notes = str(body.get('notes') or '')
+
+    result = dict(job.get('result') or {})
+    compare = dict(result.get('compare') or {})
+    local_cm = None
+    gemini_cm = None
+    if compare.get('local') and compare['local'].get('cm_raw') is not None:
+        local_cm = float(compare['local']['cm_raw'])
+    elif job.get('mode') == 'paper' and result.get('cm_raw') is not None:
+        local_cm = float(result['cm_raw'])
+    if compare.get('gemini') and compare['gemini'].get('cm_raw') is not None:
+        gemini_cm = float(compare['gemini']['cm_raw'])
+    elif job.get('mode') == 'gemini' and result.get('cm_raw') is not None:
+        gemini_cm = float(result['cm_raw'])
+
+    primary_cm = result.get('cm_raw')
+    if primary_cm is not None:
+        primary_cm = float(primary_cm)
+
+    scored = ANALYSIS.upsert_truth(
+        job_id=job_id,
+        mode=job.get('mode') or 'unknown',
+        truth_cm=truth_cm,
+        local_cm=local_cm,
+        gemini_cm=gemini_cm,
+        primary_cm=primary_cm,
+        confidence=result.get('confidence'),
+        notes=notes,
+        extra={'preview_url': job.get('preview_url')},
+    )
+
+    from analysis_store import error_mm
+
+    errors = {
+        'local': error_mm(local_cm, truth_cm),
+        'gemini': error_mm(gemini_cm, truth_cm),
+        'primary': error_mm(primary_cm, truth_cm),
+    }
+    if compare or job.get('mode') == 'compare':
+        compare['truth_cm'] = round(truth_cm, 2)
+        compare['errors_mm'] = {
+            'local': errors['local'],
+            'gemini': errors['gemini'],
+        }
+        compare['scores'] = {
+            'local': scored.get('local_score'),
+            'gemini': scored.get('gemini_score'),
+        }
+        result['compare'] = compare
+
+    STORE.update(
+        job_id,
+        truth_cm=round(truth_cm, 2),
+        result=result,
+        analysis=scored,
+    )
+    return {
+        'ok': True,
+        'job_id': job_id,
+        'truth_cm': round(truth_cm, 2),
+        'errors_mm': errors,
+        'scores': {
+            'local': scored.get('local_score'),
+            'gemini': scored.get('gemini_score'),
+            'primary': scored.get('primary_score'),
+        },
+        'winner': scored.get('winner'),
+        'result': result,
     }
 
 
@@ -378,6 +664,8 @@ def get_job(job_id: str):
         'error': job.get('error'),
         'error_code': job.get('error_code'),
         'meta': job.get('meta'),
+        'truth_cm': job.get('truth_cm'),
+        'analysis': job.get('analysis'),
     }
 
 
